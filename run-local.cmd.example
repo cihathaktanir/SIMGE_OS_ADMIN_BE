@@ -1,0 +1,26 @@
+@echo off
+REM ---------------------------------------------------------------------
+REM  Yerelde çalıştırma yardımcısı.
+REM
+REM  KULLANIM: bu dosyayı run-local.cmd olarak KOPYALAYIN ve doldurun.
+REM  .gitignore run-local.cmd'yi dışarıda tutuyor — parola repoya girmesin.
+REM
+REM  Bu dosyanın kendisine (.example) GERÇEK PAROLA YAZMAYIN; o commit'lenir.
+REM ---------------------------------------------------------------------
+
+REM Veritabanı parolaları. Canlıda iki farklı MSSQL kullanıcısı olacak:
+REM Mikro'ya SELECT-only, SIMGE_OS_APP'e yazma yetkili.
+set SIMGE_MIKRO_PASSWORD=BURAYA_MIKRO_PAROLASI
+set SIMGE_APP_DB_PASSWORD=BURAYA_APP_DB_PAROLASI
+
+REM İsteğe bağlı — varsayılanları application.properties'te:
+REM set SIMGE_MIKRO_USERNAME=sa
+REM set SIMGE_APP_DB_USERNAME=sa
+REM set SIMGE_ADMIN_USERNAME=admin
+
+REM E-posta. Tanımlı değilse gönderim kapanır ve başvuru onayı
+REM 503 mail_unavailable döner (davet gitmeden onaylanmış görünmesin diye).
+REM set SIMGE_MAIL_USERNAME=ornek@gmail.com
+REM set SIMGE_MAIL_PASSWORD=uygulama-sifresi
+
+call mvnw.cmd spring-boot:run

@@ -1,0 +1,33 @@
+# Gitleaks configuration for Pipeline v2.0
+# Seed F.6: secret scanning is non-optional.
+# Used by `make secrets`, by .github/workflows/ci.yml (CI gate),
+# and by .pre-commit-config.yaml (developer-side hook).
+
+title = "Pipeline v2.0 — Default secret-scan config"
+
+# Use the default ruleset bundled with gitleaks. To extend, add `[[rules]]` below.
+[extend]
+useDefault = true
+
+# Allowlist common false-positive patterns (be conservative — false negatives
+# are catastrophic). Adjust per project.
+[allowlist]
+description = "Allowlist false positives"
+paths = [
+  '''(?i)^.*\.env\.example$''',   # template files
+  '''(?i)^docs/external-articles/.*''',  # external article digests cite tokens as examples
+  '''(?i)^docs/external-skills/.*''',
+]
+
+# Common test-fixture API key prefixes that gitleaks would otherwise flag:
+regexes = [
+  '''sk-test-[a-zA-Z0-9]{20,}''',     # Stripe test mode
+  '''dummy-[a-zA-Z0-9_-]{12,}''',     # dummy / placeholder tokens
+]
+
+# To add a project-specific rule, append:
+# [[rules]]
+#   id = "my-project-app-code"
+#   description = "Customer AppCode token format"
+#   regex = '''<your-regex>'''
+#   tags = ["secret", "appcode"]

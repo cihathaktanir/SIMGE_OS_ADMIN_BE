@@ -1,0 +1,70 @@
+HELP.md
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+logs/
+
+# Secrets / env (D-004 default-deny -- NEVER commit)
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Pipeline v3.3 -- local-only harness config
+.claude/settings.local.json
+.claude/last-check.log
+
+# Pipeline v3.3 -- per-developer rules (.agents/rules/environment.md is gitignored)
+.agents/rules/environment.md
+
+# Local override docs (per-developer)
+*.local.md
+notes/
+
+
+# Yerel gizli ayarlar (SMTP sifresi vb.) -- ASLA commit edilmez.
+# Spring Boot ./config/application.properties dosyasini kendiliginden okur ve
+# classpath:application.properties uzerine yazar. Ornek: config/application.properties.example
+config/application.properties
+
+# JVM cokme raporlari (surec zorla sonlandirilinca olusur)
+hs_err_pid*.log
+replay_pid*.log
+
+# Yerel çalıştırma günlükleri
+*.log
+
+# Yerel çalıştırma yardımcısı — parola içerir, ASLA commit'lenmez.
+# Şablonu: run-local.cmd.example
+run-local.cmd
+run-local.sh
