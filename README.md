@@ -97,6 +97,40 @@ Kullanıcı adını değiştirmek için: `SIMGE_ADMIN_USERNAME=...`
 `ADMIN`, `SATIS`, `DEPO`, `MUHASEBE`, `ICERIK` — bir kişide birden fazla olabilir. Rolü
 olmayan hesap giriş yapamaz. Son aktif yöneticinin rolü alınamaz ve hesabı kapatılamaz.
 
+## Parola unutulursa
+
+> **Önce bunu yapın: her zaman EN AZ İKİ yönetici hesabı bulundurun.** Biri parolasını
+> unutursa diğeri panelden (Personel → Şifre sıfırla) halleder ve aşağıdaki son çareye hiç
+> ihtiyaç olmaz.
+
+Sıfırlayacak başka yönetici yoksa panel kilitlenir: personelde e-posta zorunlu olmadığı için
+"şifremi unuttum" bağlantısı yok. Çıkış yolu (ADR D-125):
+
+```powershell
+$env:SIMGE_ADMIN_RESET = 'admin'     # sıfırlanacak kullanıcı adı
+.\mvnw.cmd spring-boot:run
+```
+
+Açılışta o hesabın parolası sıfırlanır ve yeni geçici parola **bir kereye mahsus log'a**
+yazılır:
+
+```
+==================================================================
+ PAROLA SIFIRLANDI (SIMGE_ADMIN_RESET)
+   kullanıcı adı : admin
+   geçici parola : ....-....-....
+ >>> SIMGE_ADMIN_RESET DEĞİŞKENİNİ ŞİMDİ KALDIRIN. <<<
+==================================================================
+```
+
+**Değişkeni hemen kaldırın.** Tanımlı kaldığı sürece her açılışta parola yeniden sıfırlanır ve
+kullanıcı belirlediği parolayla giriş yapamaz.
+
+Bu mekanizma bilerek **hesap açmaz, rol vermez, kapalı hesabı açmaz** — verseydi "herhangi bir
+kullanıcıyı yönetici yap" anahtarına dönüşürdü. Yeni bir saldırı yüzeyi de açmıyor: bunu
+tanımlayabilen kişi zaten `SIMGE_APP_DB_PASSWORD`'ü okuyup aynı satırı SQL ile
+güncelleyebilir.
+
 ## Canlıya çıkmadan önce
 
 - [ ] Bu servisi internete açmayın; ters vekil yalnızca iç ağdan erişilebilir olsun.

@@ -172,4 +172,63 @@ doğrulaması kaldırılmamalı. `SecretCodes.hash` tek taraflı değiştirilmem
 
 ---
 
-*Yeni ADR eklerken sıra numarası üç repoda ortak ilerler. ID'ler değişmez; silinen bir karar boşluk bırakır.*
+
+## D-125 — Kilitlenmiş panelden çıkış: ortam değişkeniyle açılışta parola sıfırlama
+
+**Status:** Accepted · 2026-08-12
+
+**Context:** D-123 personelde e-postayı zorunlu tutmadı (depo görevlisinin kurumsal adresi
+olmak zorunda değil). Bunun kaçınılmaz sonucu: "şifremi unuttum" bağlantısı yok, parolayı
+ancak **başka bir yönetici** sıfırlayabiliyor. Aynı ADR ayrıca son aktif yöneticinin rolünün
+alınmasını ve hesabının kapatılmasını engelliyor — ama **"son yönetici parolasını unutursa"**
+için hiçbir yol bırakmamıştı.
+
+Bu gerçek bir kilitlenme; kurgu değil, kullanımda yaşandı. Tek çare veritabanına elle BCrypt
+özeti yazmaktı ve kimse yanında BCrypt üreteciyle dolaşmıyor.
+
+**Decision:** `SIMGE_ADMIN_RESET=<kullanıcı adı>` ortam değişkeniyle servis bir kez
+başlatıldığında, o hesabın parolası sıfırlanır; yeni geçici parola bir kereye mahsus log'a
+yazılır ve `must_change_password` açılır. Değişken normalde **boştur**.
+
+**Rationale:**
+- **E-posta gerektirmiyor.** D-123'ün "personelde e-posta zorunlu değil" kararını bozmadan
+  çalışıyor. Alternatifi (personele zorunlu e-posta + sıfırlama bağlantısı) olmayan adreslerin
+  uydurulmasına yol açardı.
+- **Yetki seviyesi doğru ve yeni saldırı yüzeyi açmıyor.** Bunu çalıştırabilmek için sunucuda
+  ortam değişkeni tanımlayabilmek gerekiyor. O yetkiye sahip olan kişi zaten
+  `SIMGE_APP_DB_PASSWORD`'ü okuyup aynı satırı SQL ile güncelleyebilir. Mekanizma yetki
+  eklemiyor, yalnızca meşru yolu kullanılabilir hâle getiriyor.
+- **Mevcut makineyi yeniden kullanıyor.** İlk yönetici hesabının açılışındaki desenin
+  (`StaffBootstrap`) aynısı: geçici parola üretimi, log'a bir kez yazma,
+  `must_change_password` ile ilk girişte değiştirme zorunluluğu. Yeni bir kod yolu değil.
+- **Sessiz arka kapı değil.** Sıfırlama gerçekleştiğinde log'a yüksek sesle düşüyor ve
+  "değişkeni şimdi kaldırın" uyarısı veriyor.
+
+**Kasıtlı olarak yapmadıkları — bunlar mekanizmanın sınırı:**
+- **Hesap AÇMAZ.** Kullanıcı adı yanlış yazılırsa hiçbir şey yapmaz ve hata log'lar. Açsaydı
+  bir yazım hatası sessizce yeni bir yönetici doğururdu.
+- **Rol VERMEZ.** Verseydi bayrak "herhangi bir kullanıcıyı yönetici yap" anahtarına
+  dönüşürdü — asıl tehlikeli olan bu olurdu, parola sıfırlamak değil.
+- **Kapalı hesabı AÇMAZ.** Bu iki durumda parola yine sıfırlanır ama giriş çalışmaz; sebebi
+  log'da açıkça yazılır ki kullanıcı "parolayı denedim yine olmadı" diye dönmesin.
+
+**Bu ASIL çözüm değil.** Asıl çözüm **her zaman en az iki yönetici hesabı** bulundurmak; biri
+unutursa diğeri panelden sıfırlar ve bu değişkene hiç ihtiyaç olmaz. Mekanizma, o disiplinin
+tutmadığı durum için son çare.
+
+**Riski:** Değişken sunucuda unutulursa **her açılışta** parolayı sıfırlar ve kullanıcı kendi
+belirlediği parolayla giremez. Karşı önlem: sıfırlama her gerçekleştiğinde log'a büyük harfle
+"DEĞİŞKENİ ŞİMDİ KALDIRIN" uyarısı düşüyor ve README'de aynı madde var. Kalıcı bir zarar
+vermiyor (parola her seferinde yeniden üretiliyor, hesap kaybolmuyor) ama fark edilmesi
+gecikirse kafa karıştırır.
+
+**Mitigation if violated:** Bu mekanizmaya rol verme ya da hesap açma yeteneği eklenmemeli.
+Sıfırlama sessizleştirilmemeli (log'lar kaldırılmamalı). `must_change_password` zorunluluğu
+atlanmamalı — geçici parola log'da duruyor.
+
+**Revisit when:** Kurumsal kimlik sağlayıcıya (LDAP/AD) geçildiğinde bu mekanizma gereksizleşir.
+Personele zorunlu e-posta gelirse normal sıfırlama akışı yazılabilir ve bu son çare kalabilir.
+
+---
+
+*Yeni ADR eklerken sıra numarası üç repoda ortak ilerler. IDler değişmez; silinen bir karar boşluk bırakır.*

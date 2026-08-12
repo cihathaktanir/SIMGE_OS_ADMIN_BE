@@ -18,6 +18,12 @@ REM set SIMGE_MIKRO_USERNAME=sa
 REM set SIMGE_APP_DB_USERNAME=sa
 REM set SIMGE_ADMIN_USERNAME=admin
 
+REM SON ÇARE (ADR D-125): yönetici parolası unutuldu ve sıfırlayacak BAŞKA
+REM yönetici yok. Aşağıdaki satırı açıp servisi BİR KEZ başlatın; geçici
+REM parola log'a yazılır. SONRA SATIRI TEKRAR KAPATIN — açık kaldığı sürece
+REM her açılışta parola yeniden sıfırlanır.
+REM set SIMGE_ADMIN_RESET=admin
+
 REM E-posta. Tanımlı değilse gönderim kapanır ve başvuru onayı
 REM 503 mail_unavailable döner (davet gitmeden onaylanmış görünmesin diye).
 REM set SIMGE_MAIL_USERNAME=ornek@gmail.com

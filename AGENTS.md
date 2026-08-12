@@ -49,6 +49,11 @@ Bunlar tercih değil, sınır. İhlal eden değişiklik geri alınır.
 
 7. **Yetkilendirme uçta uygulanır** (`@PreAuthorize`). Arayüzde menü gizlemek yetki değildir.
 
+8. **Kurtarma mekanizması (`SIMGE_ADMIN_RESET`, D-125) genişletilmez.** Yalnızca var olan bir
+   hesabın parolasını sıfırlar. Hesap açma, rol verme ya da kapalı hesabı etkinleştirme
+   **eklenmez** — eklenirse "herhangi bir kullanıcıyı yönetici yap" anahtarına dönüşür.
+   Sıfırlama log'ları da sessizleştirilmez.
+
 ## 3. Komutlar
 
 ```
