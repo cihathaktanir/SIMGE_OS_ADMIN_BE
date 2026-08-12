@@ -2,6 +2,7 @@ package com.simge.adminbackend.registration;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Locale;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -11,7 +12,9 @@ import org.springframework.transaction.annotation.Transactional;
 import com.simge.adminbackend.appdb.model.CompanyInvitation;
 import com.simge.adminbackend.appdb.model.RegistrationRequest;
 import com.simge.adminbackend.appdb.repository.RegistrationRequestRepository;
+import com.simge.adminbackend.erp.CariKodUretici;
 import com.simge.adminbackend.erp.CariLookupService;
+import com.simge.adminbackend.erp.CariWriter;
 import com.simge.adminbackend.erp.model.CariHesap;
 import com.simge.adminbackend.staff.StaffPrincipal;
 
@@ -25,12 +28,25 @@ import com.simge.adminbackend.staff.StaffPrincipal;
  * </p>
  *
  * <p>
- * <b>ERP'ye hiçbir şey yazılmaz.</b> {@code NO_CARI} dalında cariyi Mikro'da
- * açmak <i>elle</i> yapılan bir iş; sistem yalnızca "hangi cariye bağlansın"
- * bilgisini alır. Bu yüzden onay ekranı cari kodunu sorar ve kodun Mikro'da
- * gerçekten var olduğunu doğrular — doğrulanmasaydı bir yazım hatası,
- * kullanıcıyı hiçbir firmaya (ya da daha kötüsü, yanlış bir firmaya) bağlı bir
- * hesapla baş başa bırakırdı.
+ * Onay ekranı cari kodunu sorar ve kodun Mikro'da gerçekten var olduğunu
+ * doğrular — doğrulanmasaydı bir yazım hatası, kullanıcıyı hiçbir firmaya (ya
+ * da daha kötüsü, yanlış bir firmaya) bağlı bir hesapla baş başa bırakırdı.
+ * </p>
+ *
+ * <h2>ERP'ye yazma (D-127)</h2>
+ * <p>
+ * Bu servis artık Mikro'ya <b>yazabiliyor</b> ama yalnızca iki noktada, ikisi
+ * de <b>personel onayıyla</b>:
+ * </p>
+ * <ul>
+ *   <li>{@link #yeniCariAcarakOnayla} — {@code NO_CARI} dalında cariyi açar.
+ *       Eskiden bu iş Mikro'da elle yapılıyordu.</li>
+ *   <li>{@link #approve} — {@code CARI_NO_EMAIL} dalında, carinin <b>boş</b>
+ *       e-posta alanını doldurur.</li>
+ * </ul>
+ * <p>
+ * Otomatik yazma yok: hiçbir başvuru personel dokunmadan ERP'ye satır
+ * yazdıramaz. Yazan tek sınıf {@link com.simge.adminbackend.erp.CariWriter}.
  * </p>
  */
 @Service
@@ -41,13 +57,19 @@ public class RegistrationReviewService {
     private final RegistrationRequestRepository requestRepository;
     private final CompanyInviteService inviteService;
     private final CariLookupService cariLookup;
+    private final CariWriter cariWriter;
+    private final CariKodUretici kodUretici;
 
     public RegistrationReviewService(RegistrationRequestRepository requestRepository,
             CompanyInviteService inviteService,
-            CariLookupService cariLookup) {
+            CariLookupService cariLookup,
+            CariWriter cariWriter,
+            CariKodUretici kodUretici) {
         this.requestRepository = requestRepository;
         this.inviteService = inviteService;
         this.cariLookup = cariLookup;
+        this.cariWriter = cariWriter;
+        this.kodUretici = kodUretici;
     }
 
     @Transactional(transactionManager = "appTransactionManager", readOnly = true)
@@ -61,24 +83,24 @@ public class RegistrationReviewService {
     }
 
     /**
-     * Başvuruyu onaylar ve başvurana hesap kurma bağlantısı gönderir.
+     * Başvuruyu <b>var olan</b> bir cariye bağlayarak onaylar ve başvurana hesap
+     * kurma bağlantısı gönderir.
      *
      * @param cariKod bağlanacak Mikro carisi. {@code CARI_NO_EMAIL} dalında
      *        eşleşen cari zaten biliniyor ama yine de <b>insan onaylıyor</b>:
      *        aynı vergi numarasına birden çok şube kaydı düşebiliyor ve doğru
      *        olanı seçmek insan kararı.
+     * @param erpEposta doluysa carinin <b>boş</b> e-posta alanına yazılır
+     *        (D-127). Boş bırakılırsa ERP'ye dokunulmaz — "sadece hesabı bağla,
+     *        ERP'yi ben güncellerim" demenin yolu bu. Dolu bir adresin üzerine
+     *        hiçbir durumda yazılmaz; bunu {@link CariWriter} garantiliyor.
      * @throws CariNotFoundException cari kodu Mikro'da yok ya da pasif
      */
     @Transactional(transactionManager = "appTransactionManager")
     public RegistrationRequest approve(StaffPrincipal staff, Long requestId, String cariKod,
-            String note) {
+            String erpEposta, String note) {
 
-        RegistrationRequest request = requestRepository.findById(requestId)
-                .orElseThrow(RequestNotFoundException::new);
-
-        if (!RegistrationRequest.STATUS_PENDING.equals(request.getStatus())) {
-            throw new AlreadyReviewedException();
-        }
+        RegistrationRequest request = bekleyenBasvuru(requestId);
 
         String kod = cariKod == null ? "" : cariKod.trim();
         if (kod.isBlank()) {
@@ -86,6 +108,18 @@ public class RegistrationReviewService {
         }
 
         CariHesap cari = cariLookup.byKod(kod).orElseThrow(CariNotFoundException::new);
+
+        // ERP yazması davetten ÖNCE: e-posta yazılamıyorsa davet de gitmesin.
+        // Tersi sırada, davet gitmiş ama ERP güncellenmemiş bir ara durum kalırdı
+        // ve bunu kimse fark etmezdi.
+        String yazilacak = trimToNull(erpEposta);
+        boolean epostaYazildi = false;
+        if (yazilacak != null) {
+            epostaYazildi = cariWriter.epostaYaz(kod, yazilacak.toLowerCase(Locale.ROOT));
+            if (!epostaYazildi) {
+                throw new EpostaYazilamadi(kod);
+            }
+        }
 
         CompanyInvitation invitation = inviteService.invite(
                 kod, cari.getCariUnvan1(), staff.getId(), staff.getFullName(),
@@ -98,8 +132,78 @@ public class RegistrationReviewService {
         request.setReviewNote(trimToNull(note));
         requestRepository.save(request);
 
-        log.info("Kayıt başvurusu onaylandı: requestId={} cariKod={} invitationId={} personel={}",
-                requestId, kod, invitation.getId(), staff.getId());
+        log.info("Kayıt başvurusu onaylandı: requestId={} cariKod={} erpEposta={} "
+                + "invitationId={} personel={}",
+                requestId, kod, epostaYazildi, invitation.getId(), staff.getId());
+        return request;
+    }
+
+    /**
+     * {@code NO_CARI} dalı: Mikro'da <b>yeni cari açar</b> ve başvuruyu ona
+     * bağlayarak onaylar (D-127).
+     *
+     * <p>
+     * Cari kodunu personel veriyor. Önerilebiliyor ({@link CariKodUretici}) ama
+     * dayatılmıyor: hangi seriye açılacağı bir iş kararı ve mevcut veride tek
+     * bir düzen yok.
+     * </p>
+     *
+     * <p>
+     * Vergi numarası kontrolü burada tekrarlanıyor: başvuru "cari yok" diye
+     * sınıflandırıldığından beri biri Mikro'da elle açmış olabilir. O durumda
+     * ikinci bir cari açmak mükerrer kayıt üretirdi; personel uyarılıp var olan
+     * cariye bağlamaya yönlendiriliyor.
+     * </p>
+     *
+     * @throws CariZatenVar aynı vergi numarasıyla aktif cari bulundu
+     * @throws CariWriter.CariKoduKullanimda kod başka bir caride kullanılıyor
+     */
+    @Transactional(transactionManager = "appTransactionManager")
+    public RegistrationRequest yeniCariAcarakOnayla(StaffPrincipal staff, Long requestId,
+            CariWriter.YeniCari veri, String note) {
+
+        RegistrationRequest request = bekleyenBasvuru(requestId);
+
+        List<String> mevcut = kodUretici.ayniVergiNoluKodlar(veri.vergiNo());
+        if (!mevcut.isEmpty()) {
+            throw new CariZatenVar(mevcut);
+        }
+
+        // DİKKAT — iki ayrı veritabanı, tek işlem YOK.
+        // Bu metot appTransactionManager'da; cariWriter ise Mikro'nun kendi
+        // transaction'ında yazıyor ve dönüşte COMMIT'lenmiş oluyor. Buradan
+        // sonrası patlarsa (örneğin davet e-postası gönderilemezse) başvuru
+        // PENDING'de kalır ama cari Mikro'da açılmış olur. Bu sessiz bir hata
+        // değil: ikinci denemede aynı vergi numarası bulunur ve personel
+        // CariZatenVar ile uyarılıp "var olan cariye bağla" yoluna yönlendirilir.
+        // Dağıtık işlem (XA) kurmak, tek bir onay ekranı için ödenecek bedelden
+        // çok daha pahalı olurdu.
+        long recNo = cariWriter.yeniCari(veri);
+
+        CompanyInvitation invitation = inviteService.invite(
+                veri.cariKod(), veri.unvan(), staff.getId(), staff.getFullName(),
+                request.getEmail(), request.getFullName());
+
+        request.setStatus(RegistrationRequest.STATUS_APPROVED);
+        request.setMatchedCariKod(veri.cariKod());
+        request.setCreatedCariKod(veri.cariKod());
+        request.setReviewedBy(staff.getId());
+        request.setReviewedAt(Instant.now());
+        request.setReviewNote(trimToNull(note));
+        requestRepository.save(request);
+
+        log.info("Mikro'da cari açılarak başvuru onaylandı: requestId={} cariKod={} "
+                + "recNo={} invitationId={} personel={}",
+                requestId, veri.cariKod(), recNo, invitation.getId(), staff.getId());
+        return request;
+    }
+
+    private RegistrationRequest bekleyenBasvuru(Long requestId) {
+        RegistrationRequest request = requestRepository.findById(requestId)
+                .orElseThrow(RequestNotFoundException::new);
+        if (!RegistrationRequest.STATUS_PENDING.equals(request.getStatus())) {
+            throw new AlreadyReviewedException();
+        }
         return request;
     }
 
@@ -145,5 +249,40 @@ public class RegistrationReviewService {
 
     /** Verilen cari kodu Mikro'da bulunamadı. */
     public static class CariNotFoundException extends RuntimeException {
+    }
+
+    /**
+     * Carinin e-posta alanı yazılamadı — ya kod bulunamadı ya da adres zaten
+     * dolu. Dolu adresin üzerine yazmak kasıtlı olarak engelli (D-127): Mikro'yu
+     * doğru kabul eden fatura ve mutabakat akışlarını sessizce bozardı.
+     */
+    public static class EpostaYazilamadi extends RuntimeException {
+        private final String cariKod;
+
+        public EpostaYazilamadi(String cariKod) {
+            super("Cari e-postası yazılamadı: " + cariKod);
+            this.cariKod = cariKod;
+        }
+
+        public String getCariKod() {
+            return cariKod;
+        }
+    }
+
+    /**
+     * Aynı vergi numarasıyla Mikro'da zaten cari var — yenisini açmak mükerrer
+     * kayıt üretirdi.
+     */
+    public static class CariZatenVar extends RuntimeException {
+        private final List<String> kodlar;
+
+        public CariZatenVar(List<String> kodlar) {
+            super("Bu vergi numarasıyla cari zaten var: " + String.join(", ", kodlar));
+            this.kodlar = List.copyOf(kodlar);
+        }
+
+        public List<String> getKodlar() {
+            return kodlar;
+        }
     }
 }

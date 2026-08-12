@@ -20,13 +20,18 @@ Genel iş bölümü için `../SIMGE_OS_BE/AGENTS.md` ile birlikte okunmalı; çe
 
 Bunlar tercih değil, sınır. İhlal eden değişiklik geri alınır.
 
-1. **Mikro ERP'ye yazılmaz** (D-100 / D-104). Repository'ler
-   `com.simge.adminbackend.erp.ReadOnlyRepository` üzerinden türer; `save` / `delete` orada
-   yoktur, dolayısıyla yazmak **derleme hatasıdır**.
-   *Yazma gerektiğinde:* taban sınıfa metot **eklenmez**. İlgili tablo için ayrı ve dar bir
-   arayüz yazılır — yalnızca o tabloya, yalnızca gereken alanları güncelleyen adlandırılmış
-   sorgularla. Böylece "hangi repository yazabiliyor" sorusu grep'lenebilir kalır.
-   Öncesinde ADR yazılır ve kullanıcıya sorulur.
+1. **Mikro ERP'ye yazma yolu TEK noktadan geçer: `CariWriter`** (D-104 / **D-127**).
+   Repository'ler hâlâ `com.simge.adminbackend.erp.ReadOnlyRepository` üzerinden türer;
+   `save` / `delete` orada yoktur, yani `cariHesaplarRepository.save(...)` **derleme
+   hatasıdır** ve öyle kalır. Yazma bilerek JPA'nın dışında, tek sınıfta.
+   *`CariWriter`'ın yapabildiği iki şey var:* yeni cari açmak ve var olan bir carinin **boş**
+   e-posta alanını doldurmak. Silme yok, başka alan güncelleme yok, toplu işlem yok.
+   *Bunlar ADR yazmadan ve kullanıcıya sormadan yapılmaz:* `ReadOnlyRepository`'ye yazma
+   metodu eklemek · `CariWriter`'a üçüncü bir yazma metodu eklemek · dolu e-posta korumasını
+   (`WHERE LTRIM(RTRIM(cari_EMail)) = ''`) kaldırmak · vitrin backend'ine herhangi bir ERP
+   yazma yolu açmak.
+   *ERP'ye yazan her değişiklik `CariWriterCanliTest` ile denenir* — gerçek şemada yazıp geri
+   alarak. `src/main/resources/erp/*.sql` elle düzenlenmez, ölçümden üretilir (D-127).
 
 2. **`SIMGE_OS_APP` şemasında tablo sahipliği vardır.** Bu servis yalnızca
    `SIMGE_STAFF_*` tablolarının şemasını değiştirir (`src/main/resources/db/admin`).

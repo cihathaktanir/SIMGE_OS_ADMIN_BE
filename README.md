@@ -20,10 +20,34 @@ Ayrımın üç somut karşılığı:
 | Kullanıcılar | `SIMGE_USER` — müşteriler, e-postayla girer | `SIMGE_STAFF_USER` — Simge personeli, kullanıcı adıyla girer |
 | Oturum | `SPRING_SESSION` / `SIMGE_SESSION` çerezi | `SIMGE_STAFF_SESSION` / `SIMGE_ADMIN_SESSION` çerezi |
 
-**ERP'ye yazma henüz açılmadı.** Repository'ler burada da
+## ERP'ye yazma (ADR D-127)
+
+Yazma **açıldı** ama dar: tek bir sınıf, iki işlem.
+
+| | |
+|---|---|
+| Yazan tek sınıf | [`CariWriter`](src/main/java/com/simge/adminbackend/erp/CariWriter.java) |
+| Yapabildiği | yeni cari açmak · var olan carinin **boş** e-posta alanını doldurmak |
+| Yapamadığı | silmek · başka alan güncellemek · toplu işlem · dolu e-postanın üzerine yazmak |
+| Tetikleyen | yalnızca personel onayı; otomatik yazma yok |
+
 [`ReadOnlyRepository`](src/main/java/com/simge/adminbackend/erp/ReadOnlyRepository.java)
-üzerinden türüyor. Açıldığında o taban sınıfa `save` eklenmeyecek; yazma gereken tablo için
-ayrı ve dar bir arayüz yazılacak.
+**değişmedi**: ERP tarafındaki her JPA repository'si hâlâ ondan türüyor, yani
+`cariHesaplarRepository.save(...)` bugün de derleme hatası. Yazma yolu bilerek JPA'nın
+dışında tutuldu ki "hangi kod ERP'ye yazabiliyor" sorusunun cevabı tek dosya kalsın.
+
+INSERT elle yazılmadı, **ölçülerek üretildi**: `CARI_HESAPLAR`'ın 183 sütununun yalnızca ikisi
+`NOT NULL` ve hiçbirinin varsayılanı yok — ama mevcut 2440 satırın 2439'unda tek bir NULL da
+yok. Yani şema serbest, Mikro değil. Üretilen betikler
+[`src/main/resources/erp/`](src/main/resources/erp) altında; şema değişirse yeniden
+üretilmeli (yöntem D-127'de).
+
+**Doğrulama:** `CariWriterCanliTest` gerçek şemada yazıp **geri alarak** hiçbir sütunun NULL
+kalmadığını denetler. Canlı veritabanı istediği için varsayılan olarak kapalı:
+
+```powershell
+.\mvnw.cmd test "-Dsimge.erp.canli-test=true" "-Dtest=CariWriterCanliTest"
+```
 
 ## Veritabanı
 

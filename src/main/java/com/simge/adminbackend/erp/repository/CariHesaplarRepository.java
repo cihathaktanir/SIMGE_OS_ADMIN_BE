@@ -42,4 +42,25 @@ public interface CariHesaplarRepository extends ReadOnlyRepository<CariHesap, Lo
               AND (c.hidden IS NULL OR c.hidden = false)
             """)
     Optional<CariHesap> findActiveByCariKod(@Param("cariKod") String cariKod);
+
+    /**
+     * Kod önerisi için: bu önekle başlayan <b>tüm</b> kodlar.
+     *
+     * <p>
+     * İptal/gizli olanlar da dahil — kod benzersizliği tüm tabloda geçerli,
+     * iptal edilmiş bir carinin kodunu yeniden kullanmak benzersiz indekse
+     * takılır.
+     * </p>
+     */
+    @Query("SELECT c.cariKod FROM CariHesap c WHERE c.cariKod LIKE CONCAT(:onek, '%')")
+    List<String> kodlariBul(@Param("onek") String onek);
+
+    /** Aynı vergi numarasına düşen kodlar — cari açmadan önce mükerrer kontrolü. */
+    @Query("""
+            SELECT c.cariKod FROM CariHesap c
+            WHERE c.vergiDairesiNo = :vergiNo
+              AND (c.iptal IS NULL OR c.iptal = false)
+              AND (c.hidden IS NULL OR c.hidden = false)
+            """)
+    List<String> kodlariVergiNoIle(@Param("vergiNo") String vergiNo);
 }

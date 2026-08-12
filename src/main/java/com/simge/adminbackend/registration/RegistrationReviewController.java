@@ -18,13 +18,18 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.simge.adminbackend.appdb.model.RegistrationRequest;
+import com.simge.adminbackend.erp.CariKodUretici;
 import com.simge.adminbackend.erp.CariLookupService;
+import com.simge.adminbackend.erp.CariWriter;
 import com.simge.adminbackend.erp.model.CariHesap;
 import com.simge.adminbackend.staff.StaffPrincipal;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -50,19 +55,60 @@ public class RegistrationReviewController {
 
     private final RegistrationReviewService service;
     private final CariLookupService cariLookup;
+    private final CariKodUretici kodUretici;
 
     public RegistrationReviewController(RegistrationReviewService service,
-            CariLookupService cariLookup) {
+            CariLookupService cariLookup,
+            CariKodUretici kodUretici) {
         this.service = service;
         this.cariLookup = cariLookup;
+        this.kodUretici = kodUretici;
     }
 
+    /**
+     * @param erp_eposta doluysa carinin <b>boş</b> e-posta alanına yazılır
+     *        (D-127). Boş bırakmak "ERP'ye dokunma, sadece hesabı bağla"
+     *        demektir. Dolu bir adresin üzerine hiçbir durumda yazılmaz.
+     */
     public record ApproveRequest(
             @Size(max = 25) String cari_kod,
+            @Email @Size(max = 190) String erp_eposta,
             @Size(max = 500) String note) {
     }
 
     public record RejectRequest(@Size(max = 500) String note) {
+    }
+
+    /**
+     * Mikro'da açılacak carinin alanları.
+     *
+     * <p>
+     * Çoğu başvuru formundan geliyor ve panelde önceden dolu geliyor; personel
+     * düzeltip onaylıyor. İki alan bilinçli olarak <b>istemciden</b> alınıyor:
+     * </p>
+     * <ul>
+     *   <li>{@code cari_kod} — hangi seriye açılacağı iş kararı; sistem yalnızca
+     *       öneriyor (bkz. {@code /cari-kod-oner}).</li>
+     *   <li>{@code efatura_mukellefi} — VKN'ye bağlı bir mükellefiyet, veriden
+     *       tahmin edilmiyor. Mevcut carilerde dağılım %59/%41; varsayılanı
+     *       yanlış koymak fatura kesilemez hâle getirirdi.</li>
+     * </ul>
+     */
+    public record YeniCariRequest(
+            @NotBlank @Size(max = 25) String cari_kod,
+            @NotBlank @Size(max = 200) String unvan,
+            @NotBlank @Pattern(regexp = "[0-9]{10,11}") String vergi_no,
+            @Size(max = 100) String vergi_dairesi,
+            @Email @Size(max = 190) String eposta,
+            boolean efatura_mukellefi,
+            @Size(max = 100) String adres,
+            @Size(max = 100) String mahalle,
+            @Size(max = 50) String ilce,
+            @Size(max = 50) String il,
+            @Size(max = 50) String ulke,
+            @Size(max = 10) String posta_kodu,
+            @Size(max = 50) String telefon,
+            @Size(max = 500) String note) {
     }
 
     @Operation(summary = "Başvuru listesi",
@@ -85,8 +131,15 @@ public class RegistrationReviewController {
             dto.put("full_name", request.getFullName());
             dto.put("phone", request.getPhone());
             dto.put("company_name", request.getCompanyName());
+            // NO_CARI dalında cari açmak için toplanan alanlar (D-127); panel
+            // formu bunlarla önceden dolar, personel düzeltip onaylar.
+            dto.put("vergi_dairesi", request.getVergiDairesi());
+            dto.put("address", request.getAddress());
+            dto.put("district", request.getDistrict());
+            dto.put("city", request.getCity());
             dto.put("branch", request.getBranch());
             dto.put("matched_cari_kod", request.getMatchedCariKod());
+            dto.put("created_cari_kod", request.getCreatedCariKod());
             dto.put("status", request.getStatus());
             dto.put("review_note", request.getReviewNote());
             dto.put("created_at", request.getCreatedAt());
@@ -145,7 +198,8 @@ public class RegistrationReviewController {
         StaffPrincipal staff = (StaffPrincipal) authentication.getPrincipal();
 
         try {
-            RegistrationRequest request = service.approve(staff, id, body.cari_kod(), body.note());
+            RegistrationRequest request = service.approve(staff, id, body.cari_kod(),
+                    body.erp_eposta(), body.note());
             return ResponseEntity.ok(Map.of(
                     "id", request.getId(),
                     "status", request.getStatus(),
@@ -160,6 +214,86 @@ public class RegistrationReviewController {
 
         } catch (RegistrationReviewService.CariNotFoundException e) {
             return ResponseEntity.unprocessableEntity().body(Map.of("error", "cari_not_found"));
+
+        } catch (RegistrationReviewService.EpostaYazilamadi e) {
+            return ResponseEntity.unprocessableEntity().body(Map.of(
+                    "error", "erp_eposta_yazilamadi", "cari_kod", e.getCariKod()));
+
+        } catch (CompanyInviteService.EmailTakenException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("error", "email_taken"));
+
+        } catch (CompanyInviteService.MailUnavailableException e) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("error", "mail_unavailable"));
+        }
+    }
+
+    @Operation(summary = "Cari kodu öner",
+            description = """
+                    Verilen önekteki bir sonraki boş cari kodu. Yalnızca **öneri**:
+                    hangi seriye açılacağı iş kararı, kodu personel onaylıyor.
+
+                    Öneri bir rezervasyon değil; kodu asıl garantiye alan şey Mikro'daki
+                    benzersiz indeks.""")
+    @GetMapping("/cari-kod-oner")
+    public ResponseEntity<Map<String, Object>> cariKodOner(
+            @RequestParam(name = "onek", required = false) String onek) {
+        return ResponseEntity.ok(Map.of(
+                "onek", onek == null || onek.isBlank() ? kodUretici.varsayilanOnek() : onek,
+                "cari_kod", kodUretici.oner(onek)));
+    }
+
+    @Operation(summary = "Mikro'da cari AÇARAK onayla",
+            description = """
+                    `NO_CARI` dalı için. Mikro'da **yeni cari açar**, başvuranı ona bağlar
+                    ve hesap kurma bağlantısı gönderir. ERP'ye yazan iki uçtan biri (D-127).
+
+                    Açılan satır, mevcut carilerden ölçülmüş şablonla yazılır: 182 sütunun
+                    tamamı doldurulur, hiçbiri NULL kalmaz. Ana adres satırı da aynı
+                    işlemde yazılır.
+
+                    Yanıt kodları:
+                    - **200** cari açıldı, başvuru onaylandı, davet gönderildi
+                    - **404** başvuru yok
+                    - **409** başvuru zaten incelenmiş / bu adresin hesabı var /
+                      **bu vergi numarasıyla cari zaten var** (`cari_zaten_var`) /
+                      cari kodu kullanımda (`cari_kodu_kullanimda`)
+                    - **503** e-posta gönderimi yapılandırılmamış""")
+    @PostMapping("/{id}/cari-ac")
+    public ResponseEntity<Map<String, Object>> cariAc(Authentication authentication,
+            @PathVariable("id") Long id, @Valid @RequestBody YeniCariRequest body) {
+
+        StaffPrincipal staff = (StaffPrincipal) authentication.getPrincipal();
+
+        CariWriter.YeniCari veri = new CariWriter.YeniCari(
+                body.cari_kod().trim(), body.unvan().trim(), body.vergi_dairesi(),
+                body.vergi_no(), body.eposta(), body.efatura_mukellefi(),
+                body.adres(), body.mahalle(), body.ilce(), body.il(),
+                body.ulke(), body.posta_kodu(), body.telefon());
+
+        try {
+            RegistrationRequest request = service.yeniCariAcarakOnayla(staff, id, veri, body.note());
+            return ResponseEntity.ok(Map.of(
+                    "id", request.getId(),
+                    "status", request.getStatus(),
+                    "cari_kod", request.getCreatedCariKod()));
+
+        } catch (RegistrationReviewService.RequestNotFoundException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("error", "not_found"));
+
+        } catch (RegistrationReviewService.AlreadyReviewedException e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT)
+                    .body(Map.of("error", "already_reviewed"));
+
+        } catch (RegistrationReviewService.CariZatenVar e) {
+            // Personel "var olan cariye bağla" yoluna yönlendirilsin diye kodlar
+            // da dönüyor; yoksa Mikro'da elle aramak zorunda kalırdı.
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+                    "error", "cari_zaten_var", "cari_kodlari", e.getKodlar()));
+
+        } catch (CariWriter.CariKoduKullanimda e) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+                    "error", "cari_kodu_kullanimda", "cari_kod", e.getCariKod()));
 
         } catch (CompanyInviteService.EmailTakenException e) {
             return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("error", "email_taken"));

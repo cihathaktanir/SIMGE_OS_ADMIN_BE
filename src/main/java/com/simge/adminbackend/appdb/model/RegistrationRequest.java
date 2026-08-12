@@ -58,6 +58,36 @@ public class RegistrationRequest {
     @Column(name = "company_name")
     private String companyName;
 
+    /*
+     * Aşağıdaki dört alan yalnızca NO_CARI dalında dolu: Mikro'da cari AÇMAK
+     * için gerekiyorlar (D-127). Cari zaten varsa doldurulmuyorlar — o durumda
+     * unvan/adres/vergi dairesi Mikro'da ve orası tek doğru kaynak (D-100).
+     */
+
+    @Column(name = "vergi_dairesi")
+    private String vergiDairesi;
+
+    @Column(name = "address")
+    private String address;
+
+    @Column(name = "district")
+    private String district;
+
+    @Column(name = "city")
+    private String city;
+
+    /**
+     * Onay sonucunda Mikro'da <b>açılan</b> carinin kodu.
+     *
+     * <p>
+     * {@link #matchedCariKod} ile karıştırılmamalı: o, başvuru anında zaten var
+     * olan cariyi gösterir. İkisi ayrı tutuluyor ki "bu cariyi biz mi açtık"
+     * sorusu sonradan cevaplanabilsin.
+     * </p>
+     */
+    @Column(name = "created_cari_kod")
+    private String createdCariKod;
+
     @Column(name = "branch", nullable = false)
     private String branch;
 

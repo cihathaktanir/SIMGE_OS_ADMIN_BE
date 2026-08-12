@@ -231,4 +231,106 @@ Personele zorunlu e-posta gelirse normal sıfırlama akışı yazılabilir ve bu
 
 ---
 
+## D-127 — ERP'ye yazma açıldı: cari açma ve boş e-posta doldurma (yalnızca panelden, yalnızca onayla)
+
+**Status:** Accepted · 2026-08-12 · D-104'ü **daraltarak** günceller (kaldırmaz)
+
+**Context:** D-122 bu servisi tam da bunun için ayırmıştı: "ileride ERP'ye sınırlı yazma
+yapacak, o yüzden internete açık vitrinden ayrı ve intranette". O gün geldi. İki somut ihtiyaç:
+
+1. **Cari kaydı olmayan başvurular.** `NO_CARI` dalındaki başvuruyu onaylamak için cariyi
+   önce Mikro'da elle açmak gerekiyordu. Panel "cariyi açın, sonra kodu buraya yazın"
+   diyordu — iki ayrı programda, iki kez veri girişi.
+2. **Cari var ama e-postası yok.** 2.440 aktif carinin yalnızca 252'sinde e-posta var. Kalan
+   ~%90 için adres zaten başvuruda geliyor; onaylarken ERP'ye de yazılabilir.
+
+**Kararı vermeden önce şema ölçüldü** (varsayımla ERP'ye satır yazılmaz):
+
+| Ölçüm | Sonuç |
+|---|---|
+| `CARI_HESAPLAR` sütun sayısı | 183 |
+| Şemanın `NOT NULL` tuttuğu | 2 (`cari_RECid_DBCno`, `cari_RECid_RECno`) |
+| Varsayılanı olan sütun | **0** |
+| **NULL içeren mevcut satır** | **2440'ta 1** — o da elle atılmış bir deneme kaydı |
+| Gerçekten değişken sütun | 15 |
+| Sabit sütun | 168 (94'ü `''`, 59'u `0`, 15'i özel sabit) |
+| Tetikleyici / yabancı anahtar | yok |
+
+Kritik bulgu son satırlarda: **şema neredeyse hiçbir şeyi zorunlu tutmuyor ama Mikro
+tutuyor.** Beş sütunluk bir INSERT teknik olarak çalışır ve geriye 170'ten fazla NULL sütun
+bırakır; Mikro'nun yazdığı hiçbir satır öyle değil. Bütünlük veritabanında değil, ERP
+uygulamasında — yani doğru satırı yazmak tamamen bizim sorumluluğumuz.
+
+**Decision:**
+
+**1. `ReadOnlyRepository` olduğu gibi kalıyor.** ERP tarafındaki her JPA repository'si hâlâ
+ondan türüyor; `cariHesaplarRepository.save(...)` bugün de derleme hatası. Yazma yolu bilerek
+JPA'nın **dışında**, tek bir sınıfta: `CariWriter`. Böylece "hangi kod ERP'ye yazabiliyor"
+sorusunun cevabı tek dosya ve grep'lenebilir kalıyor. D-104'e `save` eklemek tüm ERP'yi tek
+hamlede yazılabilir yapardı — asıl kaçınılan buydu ve hâlâ kaçınılıyor.
+
+**2. Yapabildiği iki şey var, üçüncüsü yok.** Yeni cari açmak ve var olan bir carinin **boş**
+e-posta alanını doldurmak. Silme yok, başka alan güncelleme yok, toplu işlem yok.
+
+**3. Dolu e-postanın üzerine yazılmıyor.** `UPDATE ... WHERE LTRIM(RTRIM(cari_EMail)) = ''`.
+Mikro'da elle girilmiş bir adresi ezmek, ERP'yi doğru kabul eden her akışı (fatura,
+mutabakat) sessizce bozardı. Doluysa 0 satır etkilenir ve çağıran bunu görür.
+
+**4. INSERT elle yazılmadı, ölçümden üretildi.** 182 sütunun tamamı yazılıyor; sabitler her
+sütun için mevcut satırlarda en çok geçen değer. Üretilen dosyalar
+`src/main/resources/erp/insert-cari.sql` ve `insert-cari-adres.sql`. Şema değişirse
+(Mikro sürüm yükseltmesi) yeniden üretilmeli.
+
+**5. Ana adres satırı aynı işlemde yazılıyor.** `CARI_HESAPLAR`'da adres yok; orada yalnızca
+`cari_fatura_adres_no = 1` ve `cari_sevk_adres_no = 1` işaretçileri var, gerçek adres
+`CARI_HESAP_ADRESLERI`'nde `adr_adres_no = 1` satırında. Adres yazılamazsa cari de geri
+alınıyor — yoksa faturada adresi boş bir cari kalır ve kimse fark etmez.
+
+**6. İki alan tahmin edilmiyor, personele soruluyor:**
+- **`cari_kod`** — şemadan türetilemeyen tek alan. Mevcut veride tek bir düzen yok: `S-` (950),
+  `M-` (878), harf önekli gruplar, doğrudan vergi numarası kullanılmış kayıtlar. Sistem
+  sıradaki boş numarayı **öneriyor**, kodu personel onaylıyor.
+- **`cari_efatura_fl`** — VKN'ye bağlı bir mükellefiyet. Mevcut carilerde dağılım %59/%41;
+  çoğunluk yeterince baskın değil ve yanlış değer fatura kesilemez hâle getirir. Onay
+  ekranında açıktan işaretleniyor, varsayılanı kapalı.
+
+**7. Otomatik yazma yok.** Hiçbir başvuru personel dokunmadan ERP'ye satır yazdıramıyor.
+Vitrin backend'i bu alanları yalnızca **topluyor**; yazma yetkisi orada yok ve olmayacak.
+
+**Rationale:** Alternatif, Mikro'nun kendi entegrasyon arayüzünü kullanmaktı. Tercih
+edilmedi çünkü elimizde belgelenmiş bir arayüz yok (D-122'nin açık sorusu hâlâ açık: Mikro
+bayisine sorulmalı). Bu karar o soruyu kapatmıyor — desteklenen bir yol çıkarsa `CariWriter`
+onun arkasına geçirilebilir; çağıranların hiçbiri değişmez, çünkü yazma yolu zaten tek
+noktadan geçiyor.
+
+**Risk 1 — dağıtık işlem yok.** Onay `appTransactionManager`'da, `CariWriter` Mikro'nun kendi
+transaction'ında; ERP yazması dönüşte commit'lenmiş oluyor. Sonrasında bir şey patlarsa
+(örneğin davet e-postası gönderilemezse) başvuru `PENDING` kalır ama cari Mikro'da açılmış
+olur. **Sessiz değil:** ikinci denemede aynı vergi numarası bulunur, personel `cari_zaten_var`
+uyarısıyla "var olan cariye bağla" yoluna yönlendirilir. XA kurmak, tek bir onay ekranı için
+ödenecek bedelden çok daha pahalı olurdu.
+
+**Risk 2 — mükerrer cari.** Başvuru "cari yok" diye sınıflandırıldıktan sonra biri Mikro'da
+elle açmış olabilir. Karşı önlem: cari açmadan hemen önce vergi numarası tekrar sorgulanıyor.
+
+**Risk 3 — şablon eskimesi.** Sabitler bugünün verisinden ölçüldü. Mikro sürüm yükseltmesi
+sütun eklerse yeni sütunlar INSERT'te yer almaz ve NULL kalır. Karşı önlem: `CariWriterCanliTest`
+gerçek şemada yazıp **geri alarak** tek bir NULL sütun kalmadığını doğruluyor. Varsayılan
+olarak kapalı (`-Dsimge.erp.canli-test=true`), çünkü canlı veritabanı istiyor.
+
+**Doğrulama:** Üretilen satır gerçek bir cariden (M-838) yalnızca iki sütunda farklı, ikisi de
+ölçülen çoğunluk değeri. Adres satırında tek fark `adr_tel_bolge_kodu`: ölçümde `'312'`
+çıkmıştı (müşterilerin çoğu Ankara), her yeni cariye Ankara alan kodu yazmak yanlış olacağı
+için boş bırakıldı.
+
+**Bu ADR'siz yapılmaması gerekenler:** `ReadOnlyRepository`'ye yazma metodu eklemek.
+`CariWriter`'a üçüncü bir yazma metodu eklemek. Dolu e-posta korumasını kaldırmak.
+`cari_efatura_fl`'ye veriden tahmin edilen bir varsayılan koymak. Vitrin backend'ine
+herhangi bir ERP yazma yolu açmak.
+
+**Revisit when:** Mikro'nun desteklenen entegrasyon arayüzü öğrenildiğinde (D-122 açık
+sorusu) — `CariWriter` onun arkasına geçirilir. Ayrıca Mikro sürüm yükseltmesinde şablon
+yeniden üretilmeli.
+
+---
 *Yeni ADR eklerken sıra numarası üç repoda ortak ilerler. IDler değişmez; silinen bir karar boşluk bırakır.*
