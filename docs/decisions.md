@@ -332,5 +332,160 @@ herhangi bir ERP yazma yolu açmak.
 sorusu) — `CariWriter` onun arkasına geçirilir. Ayrıca Mikro sürüm yükseltmesinde şablon
 yeniden üretilmeli.
 
+## D-142 — Ürün görselleri: baytlar veritabanında, servis disk önbelleğinden, adres içerik özetinden
+
+**Tarih:** 2026-08-14
+**Durum:** Kabul edildi
+**Bağlam:** Mikro görsel tutmuyor; 8.238 ürünün tamamı vitrinde yer tutucu gösteriyordu
+(backlog madde 14). Kullanıcının önerisi: *"veritabanında tutalım, admin panelinde
+arayarak ürün seçsin ve resmini ordan yükleyip değiştirebilsin"*, ardından
+*"veritabanında blob olarak tutmak çok mu maliyetli, dosyadan okumak yazmak daha mı
+hızlı"* ve son olarak *"boyut sınırı getirelim, thumbnail oluşturalım, listede
+thumbnail, detayda asıl resim"*.
+
+**Ölçüm önce geldi.** Vitrinde görsellerin gerçekte kaç piksel çizildiğine bakıldı:
+
+| Nerede | Çizilen | Adet/sayfa |
+|---|---|---|
+| Ana sayfa karosu | 190×190 | 54 |
+| Ana sayfa ikinci şerit | 236×236 | 15 |
+| Liste karosu | 306×306 | 12 |
+| **Ürün detayı** | **340×340** | 1 |
+| Kategori ikonu | 34×34 | 24 |
+
+Sonuç sürpriz oldu: **sitedeki en büyük ürün görseli 340 piksel.** Yani "detayda asıl
+resmi göster" derken o "asıl resim" ham yükleme olamazdı — 3000 piksellik telefon
+fotoğrafını 340 piksellik kutuya basmak tam da kaçınılmak istenen israftı.
+
+**Karar — iki türev, ham dosya YOK:**
+
+| Türev | Piksel | Gerekçe |
+|---|---|---|
+| `thumb` | 600 | 306'lık en büyük karoyu DPR 2'de karşılar |
+| `detail` | 1200 | 340'lık kutuyu DPR 3'te karşılar, yakınlaştırmaya pay bırakır |
+
+Ham dosya saklansaydı veritabanı ~25 GB'a çıkardı (8.238 × ~3 MB); iki türevle
+**~1,5 GB**. 1200 piksel en büyük kullanımın 3,5 katı, geri dönmek için fazlasıyla yer.
+
+**Boyut sınırı bir kabul kriteri değil.** 10 MB'ı geçen reddediliyor ama bu yalnızca
+kötüye kullanım koruması; geçen her dosya **küçültülüyor**. Sadece reddetseydik
+operatörün 9,9 MB'lık fotoğrafı geçer ve 9,9 MB saklanırdı. Ayrıca dosya boyutu sınırı
+"decompression bomb"u engellemiyor — 10 MB'lık bir dosya 30.000×30.000 piksele
+açılabilir — bu yüzden ayrıca 50 megapiksel sınırı var ve **çözmeden önce** denetleniyor.
+
+**Blob mu dosya mı — cevap "ikisi de":**
+
+Kullanıcının ısrarı haklı bir sezgiye dayanıyordu: tek yedek, öksüz dosya yok, işlemsel
+tutarlılık. Ham okuma hızı zaten belirleyici değil (SQL Server da aynı diske yazıyor).
+Asıl maliyetler başkaydı ve bu kurulumda somut:
+
+1. **Bağlantı havuzu** — Hikari ayarı yok, yani havuz başına 10. Her görsel akışı bir
+   bağlantı tutar ve o havuz fiyat/stok sorgularıyla paylaşılıyor.
+2. **Tampon havuzu** — iki veritabanı da **aynı SQL Server örneğinde**
+   (`localhost:1433`), yani aynı tampon havuzunu paylaşıyorlar. Görsel sayfaları
+   `STOKLAR`'ın sıcak sayfalarını dışarı atardı: *ürün sorguları, görsel trafiği
+   yüzünden yavaşlardı.*
+
+Çözüm ikisini de veriyor: **baytların tek doğru kaynağı veritabanı, servis ilk okumada
+yazılan atılabilir bir disk önbelleğinden.** Önbelleği silmek veri kaybı değil.
+
+**Bu tasarımın beklenmedik ikinci faydası:** panel (intranet, D-122) ile vitrinin
+**paylaşımlı klasöre ihtiyacı kalmadı.** Panel veritabanına yazıyor, her vitrin sunucusu
+kendi yerel önbelleğini kendisi oluşturuyor. Servisler ayrı makinelere çıkarsa da çalışır.
+
+**Adres içerik özetinden üretiliyor:** `/api/images/{sha256}/thumb.jpg`. Sonuçları:
+
+- Bir yıllık `immutable` önbellek **güvenli** — adres aynıysa baytlar da aynı. Tarayıcı
+  bir görseli ömründe bir kez indiriyor.
+- Panelden görsel değişince hash de değişiyor, yani *"resmi güncelledim ama tarayıcıda
+  eskisi duruyor"* sorunu hiç doğmuyor. `?v=2` gibi el işine gerek yok.
+- Aynı fotoğraf beş ürüne yüklenirse **bir kez** saklanıyor (içerik adresli). Gıda
+  toptancılığında aynı ürünün farklı gramajları sık.
+
+**İki tablo:** `SIMGE_IMAGE_BLOB` (hash birincil anahtar, baytlar) ve
+`SIMGE_IMAGE_LINK` (hangi görsel kimin, sıra 0 birincil). Ayrı olmalarının sebebi
+servis ucunun **tek bir birincil anahtar okumasıyla** cevap verebilmesi.
+
+**Biçim JPEG, WebP değil.** WebP ~%25 daha küçük olurdu ama yerel (JNI) kütüphane
+istiyor ve bu, yükleme sırasında JVM'i düşürebilecek tek bileşen olurdu. Görseller
+değişmez adreslerle sonsuza kadar önbellekte kaldığı için fark **istemci başına bir
+kereliktir**. `format` sütunu ve URL'deki uzantı sayesinde WebP ileride **ek** bir
+biçim olarak gelebilir; göç gerekmez.
+
+**Uç kamuya açık.** Vitrinin geri kalanı giriş istiyor (D-107) ama gizli olan fiyat ve
+stok; ürün fotoğrafı değil. Açık olması önüne CDN ya da nginx konabilmesini sağlıyor —
+asıl kazanç orada. Adresler tahmin edilemez (256 bit özet).
+
+**Toplu yükleme bir kolaylık değil zorunluluk.** 8.238 üründe tek tek yükleme aylar
+sürerdi. Dosya adından SKU eşleştiriliyor (`ABC123.jpg` → `ABC123`), sondaki sıra
+ekleri atılıyor (`ABC123-2.jpg`, `ABC123 (2).jpg`), eşleşmeyenler **atlanıp
+raporlanıyor** — kısmi başarı normal, parti geri alınmıyor. Eşleşme büyük/küçük harf
+duyarsız ve tüm SKU'lar **tek sorguda** çözülüyor.
+
+**`sto_kod` anahtar, `sto_RECno` değil:** operatör dosyayı SKU ile adlandırıyor ve
+RECno Mikro'nun iç sıra numarası.
+
+**Güvenlik ayrıntısı:** hash bir dosya yoluna giriyor. Denetlenmezse `../` içeren bir
+istek önbellek klasörünün dışına yazdırabilirdi; bu yüzden `[0-9a-f]{64}` kalıbı hem
+serviste hem önbellekte zorunlu.
+
+**Yol boyunca çıkan iki hata:**
+
+- **`CHAR(64)` uygulamayı açılışta düşürdü** (`found [char], but expecting
+  [varchar(64)]`). Sabit uzunluk mantıklı görünmüştü; ayrıca CHAR okurken değeri
+  boşlukla doldurup karşılaştırmaları bozabilirdi. `NVARCHAR(64)`'e çevrildi.
+- Görsel detay ucunda da bağlanmalıydı; liste ucundaki toplu okuma o yolu kapsamıyor.
+  **D-137'de stokla yaşanan hatanın aynısı** — listede görünen bir ürünün detayında
+  yer tutucu çıkardı.
+
+**Vitrin şablonunda iki ölü satıcı bileşeni çıktı.** Ürün detayındaki ana görsel
+yuvası, görsel yüklenir yüklenmez **bomboş** kaldı. Sebep tek değil ikiydi ve ikisi de
+bugüne kadar hiç çalışmamıştı — çünkü hiçbir ürünün galerisi yoktu, o dal ilk kez
+şimdi çalıştı:
+
+- `owl-carousel-o` kendini açılışta ölçüyor; kap o an yerleşmemiş oluyor.
+  Ölçüldü: `.product-slick` 443x380 iken `owl-stage`, `owl-item` ve
+  dilimlerin hepsi **genişlik 0**. Karusel bir daha toparlamıyor.
+- İçindeki `lib-ngx-image-zoom` aynı sebeple **0x0** kuruluyor.
+
+Ana görsel artık karusel değil düz bir `<img>`; seçimi alttaki küçük görsel şeridi
+yapıyor (`activeSlide`). Kaybedilen tek şey tıklayınca büyütme — kimse istemedi ve
+görselin hiç görünmemesine yeğdir. **Aynı bileşenler diğer 8 ürün-detay düzeninde de
+duruyor;** tema o düzenlere geçerse orada da değiştirilmeli.
+
+**Doğrulama:**
+
+| Adım | Sonuç |
+|---|---|
+| Birim testleri (küçültme, oran, saydam PNG, hash, ret) | 8/8 geçti |
+| Gerçek şemada entegrasyon testi (yazma, tekrarlamama, galeri, birincil) | 3/3 geçti |
+| Panelden gerçek yükleme (178 kB JPEG) | **178.572 → 19.181 bayt (9,3×)** |
+| Vitrin `thumb` (girişsiz) | 200, 4.712 bayt, `immutable` |
+| Vitrin `detail` | 200, 14.469 bayt |
+| ETag ile ikinci istek | **304** |
+| Yol kaçışı denemesi | 400 |
+| Bilinmeyen variant | 404 |
+| Disk önbelleği | iki dosya da yazıldı |
+| Ürün listesi DTO'su | `product_thumbnail` + `product_galleries` dolu |
+| Ürün detay ucu | ikisi de dolu |
+| Vitrin ürün detayı (tarayıcı) | ana görsel **340x340**, şerit çalışıyor |
+| Vitrin liste sayfası (tarayıcı) | `thumb.jpg` 306 px çiziliyor |
+
+**Mitigation if violated:** Ham dosya veritabanına yazılmamalı — 25 GB'lık bir MSSQL
+yedeği bu tasarımı geri alır. Disk önbelleği "tek doğru kaynak" muamelesi görmemeli;
+silinebilir olması tasarımın parçası. Öksüz bayt silen otomatik bir iş **bilerek
+yazılmadı**: ham dosya saklanmadığı için yanlış bir sorgunun geri dönüşü yok.
+
+**Revisit when:**
+- Vitrin görsellere `loading="lazy"` ve `width`/`height` özniteliklerini
+  vermiyor olabilir; ana sayfada 54 görsel var, düzen kaymasını önlemek için bakılmalı.
+- Kategori görselleri (12 ana + 73 alt) altyapıya dahil ama panelde ekranı yok;
+  ikonlar 34 piksel, `thumb` fazlasıyla yeter.
+- Detay sayfasında `thumb` zaten önbellekte olduğu için anında gösterilip `detail`
+  arkada değiştirilebilir — bedava algılanan hız, henüz yapılmadı.
+- WebP/AVIF eklemek isterse: `format` sütunu ve uzantı hazır, göç gerekmiyor.
+- Canlıda `SIMGE_IMAGE_BLOB` büyüdükçe yedek süresi izlenmeli.
+
+---
 ---
 *Yeni ADR eklerken sıra numarası üç repoda ortak ilerler. IDler değişmez; silinen bir karar boşluk bırakır.*
