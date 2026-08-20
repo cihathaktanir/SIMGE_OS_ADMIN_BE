@@ -72,7 +72,7 @@ class JsonAlanAdlariTest {
     @DisplayName("Depo satırı fiyatli_urun / stoklu_urun olarak çıkar")
     void depoSatiriAlanAdlari() throws Exception {
         var satir = new WarehouseService.DepoSatiri(
-                4, "ELMADAG 3", 7338, 5990, true, true, null);
+                4, "ELMADAG 3", 7338, 5990, true, null);
 
         @SuppressWarnings("unchecked")
         Map<String, Object> json = mapper.readValue(mapper.writeValueAsString(satir), Map.class);
@@ -83,7 +83,6 @@ class JsonAlanAdlariTest {
         assertEquals(4, json.get("no"));
         assertEquals("ELMADAG 3", json.get("ad"));
         assertEquals(true, json.get("secili"));
-        assertEquals(true, json.get("uygun"));
 
         assertTrue(json.containsKey("uyari"), "uyari alanı null da olsa gönderilmeli");
     }

@@ -45,7 +45,7 @@ class JacksonYapilandirmaTest {
     @DisplayName("Uygulamanın mapper'ı yanıtı snake_case üretiyor")
     void yanitSnakeCase() throws Exception {
         var satir = new WarehouseService.DepoSatiri(
-                4, "ELMADAG 3", 7338, 5990, true, true, null);
+                4, "ELMADAG 3", 7338, 5990, true, null);
 
         String json = mapper.writeValueAsString(satir);
 

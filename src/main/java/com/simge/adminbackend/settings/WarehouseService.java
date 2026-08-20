@@ -46,12 +46,24 @@ public class WarehouseService {
     private static final Logger log = LoggerFactory.getLogger(WarehouseService.class);
 
     /**
-     * Bir deponun vitrine yeteceğinin alt sınırı.
+     * Altında uyarı gösterilen ürün sayısı.
      *
      * <p>
-     * Ölçüme dayanıyor: gerçek satış depolarında fiyatlı ürün 7.300 civarı,
-     * kullanılmayan depolarda 1.100-1.700. Sınır, "operatör yanlışlıkla boş bir
-     * depo seçti" durumunu yakalamak için var; dolu bir depoyu engellememeli.
+     * <b>Bu bir engel değil, bildirim eşiği.</b> Depoyu seçme kararı
+     * yöneticinin; buradaki tek iş "bu depoda şu kadar ürün var" bilgisini öne
+     * çıkarmak.
+     * </p>
+     *
+     * <p>
+     * Önceden bu eşik seçimi <b>engelliyordu</b>. Yanlıştı: eşiği kod uyduruyor,
+     * kararı ise depoyu tanıyan insan vermeli. Yeni açılmış ya da geçici olarak
+     * boşaltılmış bir depoya bilerek geçmek isteyen yönetici, kodun seçtiği bir
+     * sayıya takılmamalı.
+     * </p>
+     *
+     * <p>
+     * Ölçüm: gerçek satış depolarında fiyatlı ürün 7.300 civarı, kullanılmayan
+     * depolarda 1.100-1.700, SANAL DEPO icin 0.
      * </p>
      */
     private static final int UYARI_ESIGI = 100;
@@ -68,15 +80,21 @@ public class WarehouseService {
         this.dolulukRepository = dolulukRepository;
     }
 
-    /** Seçim ekranındaki bir satır. */
+    /**
+     * Seçim ekranındaki bir satır.
+     *
+     * <p>
+     * {@code uyari} doluysa panel bunu satırda ve onay metninde gösteriyor —
+     * ama <b>seçimi engellemiyor</b>. "Seçilebilir mi" diye bir alan bilerek
+     * yok: o kararı sunucu vermiyor.
+     * </p>
+     */
     public record DepoSatiri(
             int no,
             String ad,
             int fiyatliUrun,
             int stokluUrun,
             boolean secili,
-            /** false ise panel bu satırı seçtirmiyor ve sebebini gösteriyor. */
-            boolean uygun,
             String uyari) {
     }
 
@@ -130,15 +148,13 @@ public class WarehouseService {
             DepoDolulukRepository.Doluluk dol =
                     doluluk.getOrDefault(d.getNo(), new DepoDolulukRepository.Doluluk(0, 0));
 
-            String uyari = uyari(dol);
             satirlar.add(new DepoSatiri(
                     d.getNo(),
                     d.getAdi() == null ? "" : d.getAdi().trim(),
                     dol.fiyatliUrun(),
                     dol.stokluUrun(),
                     mevcut != null && mevcut.equals(d.getNo()),
-                    uyari == null,
-                    uyari));
+                    uyari(dol)));
         }
         return satirlar;
     }
@@ -151,32 +167,44 @@ public class WarehouseService {
      * satırı; ERP salt okunur (D-100).
      * </p>
      *
-     * @throws GecersizDepo depo yoksa, iptalliyse ya da vitrini boşaltacaksa
+     * <h2>Neyi reddeder, neyi reddetmez</h2>
+     * <p>
+     * Reddedilen tek şey <b>var olmayan depo</b>: Mikro'nun {@code DEPOLAR}
+     * tablosunda karşılığı yoksa seçilecek bir şey yoktur. Depo 0 da bu
+     * kapsamda — tabloda hiç geçmiyor.
+     * </p>
+     *
+     * <p>
+     * Bunun dışında <b>hiçbir şey engellenmez</b>. Boş depo da, Mikro'da iptal
+     * işaretli depo da seçilebilir; panel uyarıyı gösterir, kararı yönetici
+     * verir. Önceden burada "vitrini boşaltır" gerekçesiyle bir engel vardı ve
+     * eşiği kod uyduruyordu — depoyu tanıyan insanın elini bağlıyordu.
+     * </p>
+     *
+     * @throws GecersizDepo yalnızca depo Mikro'da yoksa
      */
     @Transactional(transactionManager = "appTransactionManager")
     public DepoSatiri degistir(int yeniDepo, Long staffId) {
-        if (yeniDepo <= 0) {
-            // Ayrı bir mesaj: 0 yazmak yaygın bir hata ve "depo bulunamadı"
-            // demek sebebi gizlerdi.
-            throw new GecersizDepo("Depo 0 kullanılamaz: Mikro'da 0 numaralı depo yok ve "
-                    + "stok hareketlerinde hiç geçmiyor. Seçilirse katalogdaki tüm ürünler "
-                    + "stoksuz görünür.");
-        }
-
         Depo depo = depoRepository.findFirstByNo(yeniDepo)
-                .orElseThrow(() -> new GecersizDepo(
-                        "Mikro'da " + yeniDepo + " numaralı depo yok."));
-
-        if (Boolean.TRUE.equals(depo.getIptal())) {
-            throw new GecersizDepo("Depo " + yeniDepo + " Mikro'da iptal edilmiş.");
-        }
+                .orElseThrow(() -> new GecersizDepo(yeniDepo <= 0
+                        // 0 yaygın bir hata; sebebi söylemek "depo bulunamadı"
+                        // demekten daha yardımcı.
+                        ? "Depo 0 kullanılamaz: Mikro'da 0 numaralı depo yok ve stok "
+                                + "hareketlerinde hiç geçmiyor. Seçilirse katalogdaki tüm "
+                                + "ürünler stoksuz görünür."
+                        : "Mikro'da " + yeniDepo + " numaralı depo yok."));
 
         DepoDolulukRepository.Doluluk dol = dolulukRepository.hepsi()
                 .getOrDefault(yeniDepo, new DepoDolulukRepository.Doluluk(0, 0));
 
         String uyari = uyari(dol);
         if (uyari != null) {
-            throw new GecersizDepo(uyari);
+            // Engellenmiyor ama iz bırakıyor: "vitrin neden boşaldı" diye
+            // sorulduğunda cevabın günlükte durması gerekiyor.
+            log.warn("Uyarılı depo seçildi: {} ({}) — {}", yeniDepo, depo.getAdi(), uyari);
+        }
+        if (Boolean.TRUE.equals(depo.getIptal())) {
+            log.warn("Mikro'da iptal işaretli depo seçildi: {} ({})", yeniDepo, depo.getAdi());
         }
 
         AppSetting ayar = settingRepository.findById(AppSetting.KEY_WAREHOUSE)
@@ -201,13 +229,18 @@ public class WarehouseService {
 
         return new DepoSatiri(yeniDepo,
                 depo.getAdi() == null ? "" : depo.getAdi().trim(),
-                dol.fiyatliUrun(), dol.stokluUrun(), true, true, null);
+                dol.fiyatliUrun(), dol.stokluUrun(), true, uyari);
     }
 
     /**
-     * Deponun vitrine yetip yetmediği.
+     * Deponun dikkat çeken bir yanı var mı.
      *
-     * @return engelleme sebebi, sorun yoksa {@code null}
+     * <p>
+     * Dönen metin <b>bilgi</b>; seçimi engellemiyor. Panel bunu satırda ve onay
+     * kutusunda gösteriyor ki yönetici kararı bilerek versin.
+     * </p>
+     *
+     * @return uyarı metni, kayda değer bir şey yoksa {@code null}
      */
     private String uyari(DepoDolulukRepository.Doluluk dol) {
         if (dol.fiyatliUrun() < UYARI_ESIGI) {

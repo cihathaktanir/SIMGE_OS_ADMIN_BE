@@ -1059,3 +1059,63 @@ amaç davranışı savunmak değil, mekanizmayı görünür tutmak.
 açtığım geçici personel hesabı kullanıcının isteğiyle silindi ve geriye parolasını
 bilmediğim `admin` kaldı. Kablo sözleşmesi artık uygulamanın gerçek
 yapılandırmasıyla test altında; ekranda son onayı kullanıcı verecek.
+
+---
+
+## D-156 — Depo seçimini kod engellemez; uyarı bilgi verir, kararı yönetici verir
+
+**Tarih:** 2026-08-20
+**Durum:** Kabul edildi
+**Bağlam:** Kullanıcı: *"Hangi deponun seçilemeyeceğini neden kafana göre karar
+verdin uyarı yazıları kalsın admin isterse yine seçebilir"*.
+
+D-152'de depo seçimine bir eşik konmuştu: 100'den az fiyatlı ya da stok
+hareketli ürünü olan depo hem panelde seçilemiyor hem de sunucu tarafından
+reddediliyordu. **Eşiği kod uyduruyordu.** Gerekçe ("vitrini boşaltır") doğru
+ama sonuç yanlıştı: yeni açılmış, taşınmakta olan ya da geçici olarak
+boşaltılmış bir depoya bilerek geçmek isteyen yönetici, kodun seçtiği bir sayıya
+takılıyordu. Bu bir güvenlik sınırı değil, bir tahmindi.
+
+### Yeni sınır
+
+Reddedilen tek şey **var olmayan depo** — Mikro'nun `DEPOLAR` tablosunda
+karşılığı yoksa seçilecek bir şey yoktur. Depo 0 da bu kapsamda; tabloda hiç
+geçmiyor ve ayrı bir mesajla söyleniyor çünkü 0 yazmak yaygın bir hata ve
+"depo bulunamadı" demek sebebi gizlerdi.
+
+Bunun dışında hiçbir şey engellenmiyor:
+
+| Durum | Önce | Şimdi |
+|---|---|---|
+| Boş depo (SANAL DEPO, 0/0) | reddediliyordu | **seçilebilir**, uyarı gösterilir |
+| Stok hareketi az depo (15: 1.214/24) | reddediliyordu | **seçilebilir**, uyarı gösterilir |
+| Mikro'da iptal işaretli depo | reddediliyordu | **seçilebilir** |
+| Mikro'da olmayan depo / 0 | reddediliyor | reddediliyor |
+
+`DepoSatiri`'ndeki `uygun` alanı **kaldırıldı**. "Seçilebilir mi" sorusunun
+cevabını sunucu vermiyor artık; yalnızca `uyari` metni dönüyor.
+
+### Uyarı nereye gidiyor
+
+Kaybolmuyor, üç yerde duruyor:
+
+* depo kartında **Dikkat** rozeti ve açıklama satırı,
+* onay kutusunda `DİKKAT: …` satırı olarak — yönetici kararı bilerek versin,
+* sunucu günlüğünde `WARN` olarak. Engellemiyoruz ama iz bırakıyoruz: "vitrin
+  neden boşaldı" diye sorulduğunda cevabın günlükte olması gerekiyor. İptal
+  işaretli depo seçimi de ayrıca loglanıyor.
+
+Panelde kart artık `disabled` değil; uyarılı kart yalnızca **renk** olarak
+ayrışıyor (kenarlık ve zemin), geometri değişmiyor.
+
+### Ders
+
+Ölçüm iyiydi, ondan çıkarılan kural fazlaydı. Sayıyı göstermek operatörü
+bilgilendirir; sayıya bakıp onun yerine karar vermek, alan bilgisini kodun
+tahminine feda etmektir. Bu ayrım bundan sonraki eşikler için de geçerli.
+
+### Doğrulama
+
+`WarehouseServiceTest` yeniden yazıldı; testler artık **seçilebildiğini**
+doğruluyor (uyarı dönüyor ama ayara gerçekten yazılıyor). Panel paketi:
+**104 test, 0 hata**.
