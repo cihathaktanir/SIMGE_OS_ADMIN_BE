@@ -35,6 +35,26 @@ public class ImageLink {
     public static final String OWNER_PRODUCT = "PRODUCT";
     public static final String OWNER_CATEGORY = "CATEGORY";
 
+    /**
+     * Ana sayfa öğesi görseli — banner ve hizmet ikonları (ADR D-154).
+     *
+     * <p>
+     * Anahtarı {@code "<öğe id>:<dil>"} ({@code "12:tr"}). Dil anahtarın
+     * parçası çünkü banner'ların TR ve EN görselleri ayrı: üzerinde yazı olan
+     * bir banner iki dilde iki farklı dosya.
+     * </p>
+     *
+     * <p>
+     * <b>Bu bağ neden var:</b> öğenin görseli aslında
+     * {@code SIMGE_HOME_SECTION_ITEM.image_tr} sütununda duruyor ve çizimde
+     * okunan tek yer orası. Bağ, baytların <b>sahipsiz görünmemesi</b> için
+     * kuruluyor: V17'nin sonundaki bakım sorgusu hiçbir bağı olmayan baytları
+     * "öksüz" sayıyor ve bağ kurulmasaydı, yayında olan bir banner'ın baytları
+     * o listede çıkardı.
+     * </p>
+     */
+    public static final String OWNER_HOME = "HOME";
+
     /** Karoda ve listede gösterilen görselin sırası. */
     public static final int BIRINCIL = 0;
 

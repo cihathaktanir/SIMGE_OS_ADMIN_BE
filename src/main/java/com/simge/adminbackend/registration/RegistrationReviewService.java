@@ -109,6 +109,9 @@ public class RegistrationReviewService {
 
         CariHesap cari = cariLookup.byKod(kod).orElseThrow(CariNotFoundException::new);
 
+        // POSTA ÖNCE SINANIR (D-147): aşağıdaki ERP yazması geri alınamıyor.
+        postaHazirDegilseDur();
+
         // ERP yazması davetten ÖNCE: e-posta yazılamıyorsa davet de gitmesin.
         // Tersi sırada, davet gitmiş ama ERP güncellenmemiş bir ara durum kalırdı
         // ve bunu kimse fark etmezdi.
@@ -123,7 +126,7 @@ public class RegistrationReviewService {
 
         CompanyInvitation invitation = inviteService.invite(
                 kod, cari.getCariUnvan1(), staff.getId(), staff.getFullName(),
-                request.getEmail(), request.getFullName());
+                request.getEmail(), request.getFullName(), request.getPhone());
 
         request.setStatus(RegistrationRequest.STATUS_APPROVED);
         request.setMatchedCariKod(kod);
@@ -169,6 +172,11 @@ public class RegistrationReviewService {
             throw new CariZatenVar(mevcut);
         }
 
+        // POSTA ÖNCE SINANIR (D-147). Aşağıdaki cari açma işlemi Mikro'da
+        // COMMIT'leniyor ve buradaki transaction onu geri alamıyor; posta
+        // gidemeyecekse ERP'ye hiç dokunmamak gerekiyor.
+        postaHazirDegilseDur();
+
         // DİKKAT — iki ayrı veritabanı, tek işlem YOK.
         // Bu metot appTransactionManager'da; cariWriter ise Mikro'nun kendi
         // transaction'ında yazıyor ve dönüşte COMMIT'lenmiş oluyor. Buradan
@@ -182,7 +190,7 @@ public class RegistrationReviewService {
 
         CompanyInvitation invitation = inviteService.invite(
                 veri.cariKod(), veri.unvan(), staff.getId(), staff.getFullName(),
-                request.getEmail(), request.getFullName());
+                request.getEmail(), request.getFullName(), request.getPhone());
 
         request.setStatus(RegistrationRequest.STATUS_APPROVED);
         request.setMatchedCariKod(veri.cariKod());
@@ -196,6 +204,30 @@ public class RegistrationReviewService {
                 + "recNo={} invitationId={} personel={}",
                 requestId, veri.cariKod(), recNo, invitation.getId(), staff.getId());
         return request;
+    }
+
+    /**
+     * Posta gönderilemeyecekse ERP'ye dokunmadan durur (ADR D-147).
+     *
+     * <p>
+     * Kullanıcının bildirdiği durum: SMTP hiç yapılandırılmamışken bir başvuru
+     * onaylandı, Mikro'da cari açıldı, davet gönderilemedi ve
+     * {@code MailUnavailableException} bu servisin transaction'ını geri sardı —
+     * ama Mikro'daki yazma <b>başka bir veritabanında</b> ve çoktan
+     * COMMIT'lenmişti. Sonuç: başvuru PENDING, cari ortada.
+     * </p>
+     *
+     * <p>
+     * Fırlatılan istisna gönderim anındakiyle <b>aynı</b>; panel zaten
+     * 503 / "e-posta gönderimi yapılandırılmamış" gösteriyor, mesaj değişmiyor.
+     * Değişen tek şey: artık ERP'ye yazılmadan önce başarısız oluyor.
+     * </p>
+     */
+    private void postaHazirDegilseDur() {
+        if (!inviteService.gonderilebilirMi()) {
+            log.warn("Onay durduruldu: e-posta gönderilemiyor, ERP'ye yazılmadı");
+            throw new CompanyInviteService.MailUnavailableException();
+        }
     }
 
     private RegistrationRequest bekleyenBasvuru(Long requestId) {

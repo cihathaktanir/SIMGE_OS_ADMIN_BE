@@ -21,6 +21,17 @@ public interface StokRepository extends ReadOnlyRepository<Stok, Long> {
     List<Stok> findByKodIn(List<String> kodlar);
 
     /**
+     * Ana sayfa ürün listelerindeki referansları isimle göstermek için (D-154).
+     *
+     * <p>
+     * Vitrin şablonu ürünleri {@code sto_RECno} ile referanslıyor. Panelde o
+     * numarayı çıplak göstermek, operatörden 8.238 ürünlük katalogda "83308
+     * hangi üründü?" diye hatırlamasını istemek olurdu.
+     * </p>
+     */
+    List<Stok> findByRecnoIn(List<Long> recnolar);
+
+    /**
      * Kod veya isimde arama.
      *
      * <p>

@@ -1,0 +1,36 @@
+# =====================================================================
+# ŞABLON. Bunu config/application.properties olarak KOPYALAYIN ve doldurun.
+# Bu .example dosyasına GERÇEK PAROLA YAZMAYIN — o commit'lenir.
+#
+# Spring Boot ./config/application.properties dosyasını kendiliğinden okur ve
+# src/main/resources/application.properties üzerine yazar. Uygulamayı her
+# zamanki gibi çalıştırmanız yeterli:  .\mvnw.cmd spring-boot:run
+#
+# SIMGE_OS_BE/config/application.properties ile AYNI YAPI. E-posta hesabı da
+# aynı: tek Gmail hesabı iki servisi de karşılıyor (vitrin OTP/şifre sıfırlama,
+# panel davet e-postası).
+# =====================================================================
+
+# --- Veritabanı parolaları ---
+# Bu servis ikisini de ORTAM DEĞİŞKENİNDEN bekliyor ve varsayılanları YOK
+# (src/main/resources/application.properties satır 39 ve 52). Buraya yazılmazsa
+# uygulama açılışta patlar. Vitrin backend'inde bunlar doğrudan
+# application.properties içinde duruyor (ADR D-103).
+#
+# Canlıda ikisi FARKLI MSSQL kullanıcısı olacak: Mikro'ya SELECT-only,
+# SIMGE_OS_APP'e yazma yetkili.
+spring.datasource.password=<mikro parolasi>
+simge.app-datasource.password=<SIMGE_OS_APP parolasi>
+
+# --- Gmail ile davet e-postası ---
+# Uygulama şifresi (normal Gmail şifresi SMTP'de çalışmaz).
+# Üretmek için: https://myaccount.google.com/apppasswords
+spring.mail.username=<gmail adresi>
+spring.mail.password=<16 haneli uygulama sifresi>
+
+# Gönderen olarak görünecek isim (alıcının gelen kutusunda bu yazar).
+simge.mail.from-name=Simge Online Selling
+
+# Davet bağlantısının işaret ettiği adres. Canlıya çıkınca gerçek alan adıyla
+# değiştir. Panelin kendi adresi (4300) DEĞİL: davet edilen kişi vitrine gidiyor.
+simge.site-url=http://localhost:4200

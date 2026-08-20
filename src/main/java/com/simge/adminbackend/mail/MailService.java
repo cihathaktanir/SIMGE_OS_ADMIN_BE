@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.mail.javamail.JavaMailSenderImpl;
 import org.springframework.mail.javamail.MimeMessageHelper;
 import org.springframework.stereotype.Service;
 
@@ -63,6 +64,45 @@ public class MailService {
     /** SMTP yapılandırılmış mı — akışlar buna göre dallanır (örn. admin kuyruğuna düşürme). */
     public boolean isEnabled() {
         return enabled;
+    }
+
+    /**
+     * Gönderim <b>şu anda</b> gerçekten yapılabilir mi? (ADR D-147)
+     *
+     * <p>
+     * {@link #isEnabled()} yalnızca "kimlik bilgisi tanımlı mı" der.
+     * Bu metot ayrıca SMTP sunucusuna bağlanıp kimlik doğrulamayı dener, yani
+     * yanlış uygulama şifresini ya da ulaşılamayan sunucuyu da yakalar.
+     * </p>
+     *
+     * <p>
+     * <b>Neden var:</b> başvuru onayı önce Mikro'ya cari yazıp sonra davet
+     * gönderiyordu; posta gidemeyince ERP'de öksüz bir cari kalıyordu (iki ayrı
+     * veritabanı, ortak transaction yok). Artık ERP'ye dokunmadan önce burası
+     * soruluyor. Bir SMTP el sıkışması maliyetinde; onay ekranı günde birkaç kez
+     * kullanılan bir yer, bedeli önemsiz.
+     * </p>
+     *
+     * <p>
+     * Yarış aralığını <b>kapatmaz</b>, daraltır: bu kontrolden sonra ile gönderim
+     * arasında sunucu düşerse cari yine açılmış olur. O durumda ikinci deneme
+     * {@code CariZatenVar} ile personeli "var olan cariye bağla" yoluna
+     * yönlendiriyor.
+     * </p>
+     */
+    public boolean hazirMi() {
+        if (!enabled) {
+            return false;
+        }
+        if (mailSender instanceof JavaMailSenderImpl impl) {
+            try {
+                impl.testConnection();
+            } catch (Exception e) {
+                log.warn("SMTP bağlantı denemesi başarısız; gönderim yapılamayacak", e);
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

@@ -489,3 +489,490 @@ yazılmadı**: ham dosya saklanmadığı için yanlış bir sorgunun geri dönü
 ---
 ---
 *Yeni ADR eklerken sıra numarası üç repoda ortak ilerler. IDler değişmez; silinen bir karar boşluk bırakır.*
+
+
+## D-147 — Posta gönderilemeyecekse ERP'ye hiç dokunma; e-posta ayarları `config/` altında
+
+**Tarih:** 2026-08-18
+**Durum:** Kabul edildi
+**Bağlam:** Kullanıcı paneldan yeni cari açarak bir başvuruyu onaylarken
+*"E-posta gönderimi yapılandırılmamış; davet gönderilemedi."* hatası aldı ve ardından
+*"mail göndermeden de cariyi kaydetme"* dedi.
+
+### 1. Öksüz cari sorunu
+
+`RegistrationReviewService` iki yerde önce ERP'ye yazıp sonra davet gönderiyordu:
+
+- `yeniCariAcarakOnayla` → `cariWriter.yeniCari(...)` sonra `inviteService.invite(...)`
+- `approve` → `cariWriter.epostaYaz(...)` sonra `inviteService.invite(...)`
+
+Davet başarısız olunca `MailUnavailableException` fırlıyor ve `appTransactionManager`
+işlemi geri sarıyor — **ama Mikro başka bir veritabanı** ve oradaki yazma çoktan
+COMMIT'lenmiş oluyor. Sonuç: başvuru `PENDING`, cari ortada.
+
+Bu teorik değil, **yaşandı**: `M-2001` "Cihat test" 18.08.2026 09:50'de Mikro'da
+açılmış, başvuru #12 `PENDING` kalmış, `created_cari_kod` boş. Kullanıcının isteğiyle
+silindi (cari + adres satırı, tek transaction; hareket/sipariş/stok bağı yoktu,
+yedeği `scratchpad/m2001-yedek-*.json`).
+
+**Karar: postayı ERP'ye yazmadan ÖNCE sına.** `MailService.hazirMi()` eklendi —
+`isEnabled()`'ın ötesinde `JavaMailSenderImpl.testConnection()` ile sunucuya bağlanıp
+kimlik doğrulamayı da deniyor, yani yanlış uygulama şifresini ve ulaşılamayan sunucuyu
+da yakalıyor. `CompanyInviteService.gonderilebilirMi()` bunu dışarı veriyor ve her iki
+onay metodu ERP'ye dokunmadan önce çağırıyor.
+
+Fırlatılan istisna gönderim anındakiyle **aynı** (`MailUnavailableException`), panel
+mesajı değişmiyor — değişen tek şey hatanın ERP yazmasından **önce** olması.
+
+**Yarış aralığını kapatmaz, daraltır.** Kontrolden sonra gönderime kadar sunucu
+düşerse cari yine açılmış olur. Gerçek çözüm dağıtık işlem (XA) olurdu; tek bir onay
+ekranı için ödenecek bedelden çok daha pahalı. Kalan durumda ikinci deneme
+`CariZatenVar` ile personeli "var olan cariye bağla" yoluna yönlendiriyor.
+
+Sıra da önemli: **önce** "başvuru işlenebilir mi", **sonra** posta sınaması. Aksi
+hâlde her çift tıklama boşuna bir SMTP el sıkışması açardı — test bunu sabitliyor.
+
+### 2. E-posta ayarlarının yeri
+
+`SIMGE_OS_ADMIN_BE/config/application.properties` oluşturuldu; `SIMGE_OS_BE`'de zaten
+vardı. Spring Boot `./config/application.properties` dosyasını kendiliğinden okuyup
+`src/main/resources/application.properties`'i **ezer**. `.gitignore` ikisinde de bu
+dosyayı dışarıda tutuyor; yanına yer tutuculu `application.properties.example` kondu.
+
+**Tek Gmail hesabı iki servisi de karşılıyor** (vitrin: OTP + şifre sıfırlama; panel:
+davet). Admin tarafında bu dosya **zorunlu**: `spring.datasource.password` ve
+`simge.app-datasource.password` `${...}` biçiminde ve varsayılansız, dosya yoksa
+uygulama hiç açılmıyor. Vitrinde DB parolaları doğrudan `application.properties`'te
+(D-103).
+
+Öncelik sırası (yüksekten alçağa): komut satırı → sistem özelliği → **ortam
+değişkeni** → `config/application.properties` → `classpath:application.properties` →
+`${...:}` varsayılanı. Ortam değişkeniyle başlatılan bir süreçte config dosyası devre
+dışı kalır; sorun ararken buna dikkat edilmeli.
+
+### Doğrulama
+
+| Adım | Sonuç |
+|---|---|
+| `mvnw test` (yönetim) | **82 test, 0 hata** (5 atlandı — canlı DB isteyenler) |
+| Posta yokken yeni cari | `cariWriter.yeniCari` **hiç çağrılmıyor** (birim testi) |
+| Posta yokken ERP e-posta yazma | `cariWriter.epostaYaz` **hiç çağrılmıyor** (birim testi) |
+| Zaten incelenmiş başvuru | posta sınaması yapılmıyor (birim testi) |
+| İki servis config dosyasıyla açılış | ikisi de UP, "gönderim KAPALI" uyarısı yok |
+| Gerçek Gmail gönderimi | `E-posta gönderildi: konu='Simge — şifre sıfırlama'` |
+| M-2001 silindi | cari 0, adres 0, aktif cari 2.440 |
+
+**Kapsam notu:** olumsuz yol (posta yokken ERP'ye dokunulmaması) **birim testiyle**
+kanıtlandı, canlı ortamda denenmedi — canlı deneme başarısız olsaydı Mikro'da yeni bir
+çöp cari bırakacaktı.
+
+**Mitigation if violated:** ERP yazması posta sınamasının önüne alınırsa öksüz cari
+sorunu birebir geri gelir. `hazirMi()` yalnızca `isEnabled()`'a indirgenirse yanlış
+şifre/ulaşılamayan sunucu durumları yine ERP'ye yazdıktan sonra patlar.
+
+**Revisit when:**
+- Sipariş yazma açılırsa (backlog 18) aynı sıra sorunu orada da doğar; sipariş ERP'ye
+  yazılmadan önce yan etkilerin sınanması gerekir.
+- `testConnection()` her onayda bir SMTP el sıkışması demek. Onay sıklığı artarsa
+  sonucu kısa süreli önbelleğe almak gerekebilir.
+- Gmail uygulama şifresi bu turda konuşma geçmişine düştü; döndürülmesi öneriliyor.
+- Kalan yarış aralığı için telafi mekanizması (posta başarısızsa açılan cariyi işaretle
+  ya da personele "şu cari açıldı ama davet gitmedi" bildirimi) yazılmadı.
+
+---
+
+
+## D-149 — Kayıt/davet akışında veri tekrarı, parola tekrarı ve şahıs-firma ayrımı
+
+**Tarih:** 2026-08-19
+**Durum:** Kabul edildi
+**Bağlam:** Kullanıcı davet bağlantısıyla hesap açarken beş şey bildirdi: telefon
+ikinci kez soruluyor, KVKK onayları ikinci kez soruluyor, parola tek kez alınıyor,
+girdiği TCKN `cari_vdaire_no`ya yazılmış, ve şahıs/firma ayrımı hiç yapılmıyor.
+
+### 0. Biri hata değildi — TCKN'nin yeri
+
+Ölçüldü: `cari_vdaire_no` **2.217 kayıtta dolu; 1.712'si 10 haneli (VKN),
+485'i 11 haneli (TCKN)**. Adı çağrıştırsa da `cari_VergiKimlikNo` alanı
+**0 kayıtta** dolu. Yani Mikro ikisini de aynı alanda tutuyor ve bizim yazdığımız
+yer mevcut 485 şahıs kaydıyla birebir aynı. Değiştirilmedi.
+
+Ama şikâyetin altındaki tespit doğruydu: **şahıs/firma ayrımı hiçbir yerde
+yapılmıyordu.** Mikro'da da açık bir bayrak yok — ayrım hane sayısında gizli.
+
+### 1. Şahıs / firma: tahmin değil, seçim
+
+Kullanıcı kararıyla **açıkça soruluyor** (segment düğmesi: Limited/Anonim Şirket —
+Şahıs Şirketi). Hane sayısından türetmek de mümkündü ama sormak, doğru uzunluğu ve
+sağlamayı zorunlu kılmayı sağlıyor.
+
+Seçime göre değişenler: alan etiketi (Vergi Numarası ↔ T.C. Kimlik Numarası), ikon,
+`maxlength`, ipucu metni ve 2. adımdaki "Firma unvanı" → "Unvan / Ad Soyad".
+
+**Doğrulama artık gerçek.** Önceki desen `^[0-9 .\-]{10,20}$` idi: 12, 15, hatta
+20 haneyi kabul ediyor ve hiçbir sağlama yapmıyordu. Şimdi tam 10 (VKN) ya da tam
+11 (TCKN) hane ve **her ikisinde sağlama toplamı** zorunlu.
+
+Algoritmalar uydurma örneklerle değil **Mikro'daki 2.196 gerçek numarayla**
+sınandı: VKN'de **%98,5**, TCKN'de **%90,9** geçti. Geçmeyenler `1111111111`,
+`11111111112` gibi sahte kayıtlar — yani sağlama tam da üretilmesini istemediğimiz
+şeyi yakalıyor. Sağlama toplamı yanlış negatif üretmediği için sert engel yapıldı:
+geçerli bir numara her zaman geçer.
+
+### 2. Parola tekrarı
+
+İki formda da (kayıt self-servis dalı + davet kabul) tekrar alanı eklendi;
+eşleşme kontrolü `passwordMatchValidator` ile ve hata **tekrar alanının altında**
+gösteriliyor. Öncesinde tek kez alınıyordu: yazım hatası yapan kullanıcı hesabına
+giremiyor ve tek çıkışı parola sıfırlama oluyordu.
+
+### 3. Telefon tekrarı
+
+`SIMGE_COMPANY_INVITATION` tablosunda telefon alanı **yoktu**; panel daveti
+oluştururken başvurudan yalnızca e-posta ve ad-soyad taşınıyordu. `V18` ile
+`phone NVARCHAR(30) NULL` eklendi, panel `request.getPhone()` geçiriyor,
+`/api/auth/invitation/validate` döndürüyor ve form **hazır dolu** geliyor.
+Meslektaş davetinde null — orada ortada başvuru yok. "(isteğe bağlı)" ibaresi de
+kaldırıldı.
+
+### 4. Onay tekrarı
+
+`ConsentService.zorunlularTamamMi(email)` eklendi ve `/validate` yanıtına
+`consent_needed` olarak yansıtıldı. Kutular yalnızca gerekiyorsa gösteriliyor.
+
+**"Hep sor" da "hiç sorma" da yanlıştı:** aynı ekran meslektaş davetinde de
+kullanılıyor ve oradan gelen kişi hiç başvurmamış, hiç onay vermemiştir — ona
+sormak zorunlu.
+
+**Metin sürümü de karşılaştırılıyor**, yalnızca "onay var mı" değil. Sözleşme ya da
+aydınlatma metni onay verildikten sonra değiştiyse kişi yeni metni görmemiş sayılır
+ve yeniden sorulur; eski sürüme verilmiş onayla yeni metni dayatmak KVKK m.10
+bilgilendirme yükümlülüğünü karşılamaz. Yürürlükteki metin bulunamazsa güvenli
+taraf seçiliyor (yeniden sor).
+
+Kutular gizlenirken **doğrulayıcıları da kaldırılıyor** — yalnızca `@if` ile
+gizlemek, `requiredTrue` formda kaldığı için hiç gönderilemeyen bir forma yol
+açardı.
+
+### Doğrulama
+
+| Adım | Sonuç |
+|---|---|
+| Sağlama algoritmaları, Mikro'nun 2.196 gerçek numarası | VKN %98,5 · TCKN %90,9 (kalanlar sahte kayıtlar) |
+| Tüzel + sağlaması hatalı 10 hane | "Girdiğiniz numara geçerli değil" |
+| Tüzel + 11 hane | "Vergi kimlik numarası 10 haneli olmalı" |
+| Şahıs seçilince etiket | "T.C. Kimlik Numarası" |
+| Şahıs + 10 hane | "TC kimlik numarası 11 haneli olmalı" |
+| Tüzel + geçerli VKN (`2920015146`) | hata yok |
+| `typecheck` + üretim derlemesi | temiz |
+| İki backend derleme | temiz |
+| Konsol istisnası | 0 |
+
+**Mitigation if violated:** Sağlama toplamı gevşetilirse `1111111111` gibi kayıtlar
+yeniden üretilmeye başlar. Onay kutuları gizlenirken doğrulayıcıları kaldırılmazsa
+form hiç gönderilemez. `consent_needed` metin sürümüne bakmayı bırakırsa güncellenen
+sözleşme kimseye gösterilmez.
+
+**Revisit when:**
+- **Davet kabul ekranı uçtan uca denenmedi.** Telefon ön doldurma ve onay atlama
+  gerçek bir davet bağlantısıyla test edilmeli; birim testi de yok (vitrinin Karma
+  paketi ayrı bir sebeple kırık, bkz. backlog 33).
+- Sunucu tarafı `mukellef_turu` bilgisini **almıyor**; doğrulama şu an yalnızca
+  istemcide. Sunucuda da hane/sağlama kontrolü yapılmalı — istemciye güvenilmez.
+- Şahıs şirketinde de vergi dairesi soruluyor ve bu **doğru** (485 TCKN kaydının
+  384'ünde vdaire dolu), ama "Firma unvanı" dışındaki metinler hâlâ firma dilinde.
+- `cari_VergiKimlikNo` alanı boş duruyor; ileride e-fatura tarafı isterse burası
+  kullanılabilir.
+
+---
+
+---
+
+## D-151 — Panel ürün araması tüm kelimeleri arar
+
+**Tarih:** 2026-08-19
+**Durum:** Kabul edildi
+**Bağlam:** Kullanıcı görsel yüklerken ürünün tam adını vitrinden kopyalayıp
+panele yapıştırdı ve ürünü bulamadı: *"Admin panelinde ürün görselleri yüklerken
+kullandığım search algoritması hiç iyi değil... şunu denesene TOZ SEKER 50KG"*.
+
+**Sebep:** `ImageAdminController.urunAra` yalnızca **ilk kelimeyi** kullanıyordu.
+Kodda bunu meşrulaştıran bir yorum bile vardı — *"Tek kelimeyle sınırlı: bu bir
+katalog araması değil, 'şu ürünü bul' kutusu"*. Oysa `TurkishSearch.tokenize`'ın
+kendi dokümanı "koşullar AND'lenir" diyor: yardımcı sınıf doğru tasarlanmış,
+çağıran taraf onu yok saymış.
+
+Ölçüm: `TOZ SEKER 50KG` sorgusu `TOZ` olarak çalışıyor, katalogda "TOZ" içeren
+**107 ürün** var ve sonuç sınırı 40. Aranan ürün sınırın dışında kalıyor; ekranda
+toz biber, kabartma tozu, Calgon toz deterjan çıkıyor.
+
+**Karar: tüm kelimeler AND'lenir.** Koşul **sayısı** girdiye bağlı olduğu için
+sabit bir `@Query` yetmiyor; `StokAramaRepository` sorgu metnini kelime sayısına
+göre kuruyor. **Kullanıcı girdisi sorguya gömülmüyor** — değişen tek şey koşul
+sayısı, kelimelerin kendisi `:k0`, `:k1` … olarak bağlanıyor.
+
+### Doğrulama
+
+| Arama | Önce | Sonra |
+|---|---|---|
+| `TOZ SEKER 50KG` | 40 alakasız sonuç, ürün yok | **1 sonuç: `GIMAT-01673`** |
+
+`TurkishSearchTest` (6 test) tam da bu kullanımı kilitliyor: tam ad yapıştırma,
+fazla boşluk, ve Türkçe/ASCII eşleşmesinin **her iki yönü** ("SEKER" yazınca
+"ŞEKER"i, "ŞEKER" yazınca "SEKER"i bulmalı).
+
+**Not:** doğrulama sırasında PowerShell'de yazılan taklit sorgu "TOZ ŞEKER 50KG"
+için 0 sonuç verdi ve bir an ikinci bir hata sanıldı. Java tarafında test
+edilince uygulamanın doğru çalıştığı, hatanın betikte olduğu görüldü. Bu ADR'nin
+kaydettiği ders: **taklit sorgu bir doğrulama aracı değil**; şüphe varsa asıl
+kodun testi yazılır.
+
+---
+
+## D-152 — Vitrinin deposu panelden yönetilir; istemci depoyu seçemez
+
+**Tarih:** 2026-08-19
+**Durum:** Kabul edildi
+**Bağlam:** Kullanıcı: *"SIMGE_OS_BE nin kullandığı default depo seçimi admin
+panelinden yapılsın gerekirse onuda veri tabanına yazıp okuyalım vitrin
+backendidde sorgu öncesi oradan okusun. Burda hata yapılmaması çok önemli çünkü
+ürünler ve fiyatlar depo bazlı bunu unutma yapıyı sağlam kur."*
+
+Depo, sistemdeki en geniş etkili tek sayı: vitrindeki **her fiyat** ve **her
+stok** ondan okunuyor (D-137). Ayar `application.properties`'te olduğu sürece
+değiştirmek "dosyayı düzenle + sunucuyu yeniden başlat" demekti; bunu yapabilecek
+kişi de operatör değil geliştiriciydi.
+
+### 1. Ayar veritabanında: `SIMGE_SETTING`
+
+Tek satırlık anahtar/değer tablosu (`V19__settings.sql`), `SIMGE_OS_APP` içinde.
+**Panel yazar, vitrin okur.** Mikro'ya dokunulmuyor.
+
+**Ayar BÖLÜNMEZ.** Bu tabloya "fiyat deposu" ve "stok deposu" diye iki anahtar
+eklenmeyecek: ikisi ayrışırsa vitrin, o depoda olmayan bir ürünü başka bir
+deponun fiyatıyla satar. `ProductServiceImpl` depoyu **bir kez** okuyup aynı
+değişkeni hem fiyat hem stok sorgusuna veriyor; bunu bir test kilitliyor.
+
+### 2. Okuma: önbellek yok, yedek var
+
+`WarehouseSettingService` değeri **her sorgudan önce** okuyor. Önbellek
+"panelden değiştirdim ama vitrin hâlâ eskisini gösteriyor" penceresi açardı ve o
+pencerede vitrin **yanlış fiyat** gösterirdi. Okuma tek satırlık bir tablodan
+birincil anahtarla yapılıyor; ürün sorgusunun yanında ölçülemeyecek kadar ucuz.
+
+`simge.default-warehouse` **silinmedi** ama artık ayarın kaynağı değil: tablo
+okunamazsa (göç uygulanmamış, bağlantı düşmüş) kullanılan son çare. Amaç,
+ayarsız kalan vitrinin depo **0**'a düşmemesi — 0 numaralı depo `DEPOLAR`'da hiç
+yok ve `STOK_HAREKETLERI`'nde geçmiyor, yani katalogdaki her ürün stoksuz
+görünür. Yedek de bozuksa 4'e (ELMADAG 3) düşülüyor.
+
+### 3. `?warehouse=` kaldırıldı
+
+`GET /api/products` bu parametreyi kabul ediyor ve **verilirse onu
+kullanıyordu**: adrese bir sayı ekleyen herkes başka bir deponun fiyat listesini
+görebiliyor ve o fiyatla sepete ekleyebiliyordu. Vitrinin deposu bir
+yapılandırma kararı, istemcinin seçimi değil. `ProductSearchCriteria`'daki alan
+duruyor (repository'nin depoyu bir yerden alması gerekiyor) ama çağıran `null`
+bırakıyor; değeri servis dolduruyor.
+
+### 4. Yazma: panel, üç denetimle
+
+`WarehouseService.degistir` sırayla bakıyor — depo `DEPOLAR`'da var mı, iptalli
+mi, ve **içinde vitrine çıkacak ürün var mı**. Son denetim asıl kritik olanı;
+Mikro'da ölçülen tablo:
+
+| depo | ad | fiyatlı ürün | stok hareketli ürün |
+|---|---|---|---|
+| 4 | ELMADAG 3 | 7.338 | 5.990 |
+| 7 | CAYYOLU | 7.351 | 4.436 |
+| 15 | BATIKENT BÜYÜK | 1.214 | **24** |
+| 17 | SANAL DEPO | **0** | **0** |
+
+Depo 15 sinsi olanı: ürünler vitrinde **görünür** ama hepsi stoksuz çıkar ve
+"Sepete Ekle" hiç açılmaz — D-137'de tam olarak bu yaşandı. Bu yüzden panel
+seçenekleri isimle değil **sayılarla** gösteriyor; "SANAL DEPO" adı masum
+görünür, yanındaki `0 / 0` onu seçilemez yapar.
+
+Uç `/api/settings/**` yalnızca **ADMIN**. Görsel yüklemek ICERIK'e açık, depo
+değiştirmek değil: bu bir içerik kararı değil, sistem kararı.
+
+### Doğrulama
+
+Dört servis ayakta, gerçek Mikro ve gerçek `SIMGE_OS_APP` ile:
+
+| Kontrol | Sonuç |
+|---|---|
+| Panelden depo 4 → 5 | ayar yazıldı |
+| Vitrin, **yeniden başlatılmadan** aynı sorgu | 3/3 üründe stok değişti (18→0, 18→5, 16→15) |
+| `?warehouse=12` ile geçersiz kılma | **yok sayıldı**, sonuç hâlâ depo 5 |
+| Depo 4'e geri alma | başlangıç değerleri birebir geri geldi |
+| `PUT {"depo":17}` (SANAL DEPO) | **400** + "fiyatı olan ürün sayısı 0…" |
+| `PUT {"depo":0}` | **400** + "Mikro'da 0 numaralı depo yok…" |
+| Birim testleri | vitrin 11, panel 8 — hepsi geçti |
+
+**Kalan boşluk:** vitrin ile panel arasında dağıtık kilit yok. İki operatör aynı
+anda farklı depo seçerse son yazan kazanır. Tek kişilik bir ayar ekranı için
+kilit mekanizması kurmanın bedeli faydasından yüksek; değişiklik INFO seviyesinde
+"kim, ne zaman, hangi depodan hangisine" diye loglanıyor ve `updated_by`
+tabloda saklanıyor.
+
+---
+
+## D-153 — Kategori görselleri; görsel adresi iki kökten gelir
+
+**Tarih:** 2026-08-19
+**Durum:** Kabul edildi
+**Bağlam:** Kullanıcı: *"Kategoriler içinde resim yükleyebilelim."*
+
+### 1. Kategori görseli hiç görünmüyordu
+
+Görsel altyapısı (D-142) `owner_type = 'CATEGORY'` bağını zaten destekliyordu ve
+panelde yükleme ucu vardı. Eksik olan iki şeydi:
+
+* `CategoryServiceImpl` `category_icon` alanını **hiç doldurmuyordu**;
+* `AttachmentDTO`'da `originalUrl` alanı **yoktu**, oysa vitrin şablonu
+  `category_icon.original_url` okuyor (Multikart'ın Laravel sözleşmesi).
+
+İkincisi sessiz bozulmanın ders niteliğinde bir örneği: yalnızca `url` doldurmak
+hiçbir hata üretmez, şablon tanımsız alanı yer tutucuya çevirir ve kimse
+farkında olmaz. Bu yüzden alan eklendi ve testle değil **gerçek uçla** doğrulandı.
+
+Görseller ürünlerdeki desenle **tek sorguda** okunuyor (`birincilGorseller`);
+kategori başına sorgu 12 kategoride 12 gidiş-dönüş demekti. Alt kategoriler de
+kapsanıyor.
+
+Anahtar olarak **grup kodu** kullanılıyor, recno değil: recno Mikro'nun iç sıra
+numarası ve ana/alt gruplarda çakışıyor; kod ise operatörün panelde gördüğü ve
+kalıcı olan değer.
+
+Görseli olmayan kategoride `category_icon` **null bırakılıyor** — boş bir nesne
+göndermek "ikon var ama adresi yok" gibi görünürdü. Ürünler sayfasındaki çip
+şeridi ikonu zaten yalnızca gerçekten varsa çiziyor (D-144).
+
+### 2. Görsel adresi artık İKİ kökten gelebiliyor
+
+Vitrinde bugüne kadar tek tür görsel adresi vardı: pakete gömülü dosyalar
+(`/images/simge/...`), şablonlarda `StorageURL + image_url` ile çiziliyordu.
+Panelden yükleme geldiğinde ikinci bir tür doğdu: veritabanındaki görseller
+(`/api/images/<hash>/detail.jpg`). Eskisi gibi ön ek eklemek bunları
+`/assets/api/images/...` yapar ve **404** üretirdi.
+
+`gorselAdresi()` ayrımı kaynağa değil **adresin kendisine** bakarak yapıyor:
+mutlak adres, `data:` ve `/api/` olduğu gibi geçiyor, kalanına `storageURL`
+ekleniyor. `image-link` şablonundaki 12 tekrar eden ifade tek bir `gorsel`
+getirici ile değiştirildi.
+
+Panelde aynı ayrım **iki farklı sunucu** demek ve bu karıştırılmamalı:
+`/api/images/...` vitrin backend'inde (8080), `/assets/images/...` vitrin
+uygulamasında (4200). `core/vitrin.ts` ikisini ayrı sabit olarak tutuyor.
+
+### Doğrulama
+
+Gerçek servislerle, uçtan uca:
+
+| Kontrol | Sonuç |
+|---|---|
+| Panelden SIGARALAR (kod 01) kategorisine görsel | yüklendi, 9.357 → 16.054 bayt (iki türev) |
+| `GET /api/categories` | `category_icon.original_url = /api/images/<hash>/thumb.jpg` |
+| Görseli olmayan 11 kategori | `category_icon` **null** |
+| Bağ kaldırıldıktan sonra | alan yeniden **null** |
+
+**Not:** doğrulama sırasında `/api/getcategories` denendi ve **500** alındı —
+gerçek yol `/api/categories`. Adres hatasıydı, ama vitrin backend'inin var
+olmayan bir yolu 404 yerine 500 ile karşılaması (`NoResourceFoundException`
+`GlobalExceptionHandler`'a düşüyor) ayrı ve **açık bir kusur**. Bu ADR kapsamında
+düzeltilmedi; kayda geçiriliyor.
+
+---
+
+## D-154 — Vitrin ana sayfası panelden yönetiliyor; bölümler eklenip silinmiyor
+
+**Tarih:** 2026-08-19
+**Durum:** Kabul edildi
+**Bağlam:** Kullanıcı: *"Admin panelinde veri tabanında tuttuğumuz bütün vitrin
+konfigürasyonları editleyebilelim... Ürün tanıtımı olan banner-section ve
+gift-card-section da ki görselleri değiştirebilelim. User friendly olsun
+kategoriasyonunu güzel yap."*
+
+Ana sayfa D-13x'te mock JSON'dan `SIMGE_OS_APP`'e taşınmıştı ve o zaman
+*"ileride admin panel aynı tabloları yazacak"* diye not düşülmüştü. Bu ADR o
+notun karşılığı.
+
+### 1. Bölümler eklenip silinmiyor — bilerek
+
+Her `section_key` vitrin şablonundaki bir **yuvanın adı**. Şablonda karşılığı
+olmayan bir anahtar eklemek hiçbir şey çizmez; var olanı silmek o yuvayı sessizce
+boşaltır ve geri getirmek için veritabanına elle satır yazmak gerekir. Panel
+yuvaların **içeriğini** yönetiyor: başlık, sıra, açık/kapalı ve öğeler.
+
+Bu bir sınırlama değil, yanlış anlaşılmayı önleyen bir sınır: "bölüm ekle"
+düğmesi olsaydı operatör ekler, vitrinde hiçbir şey görmez ve nedenini bulamazdı.
+
+### 2. Anahtarlar insanca adlandırıldı
+
+Veritabanındaki adlar şablonun iç adları: `offer_banner_1`, `products_list_3`.
+Panelde çıplak göstermek, operatörden şablon kaynağını bilmesini istemek olurdu —
+özellikle `offer_banner_1` / `offer_banner_2` ikilisinde, çünkü ikisi de "banner"
+ve sayfanın çok farklı yerlerinde duruyorlar. `BolumEtiketleri` her anahtara bir
+**ad** ve **nerede göründüğü** veriyor:
+
+* `offer_banner_1` → "Ürün tanıtım banner'ları — kategori şeridinin altındaki
+  banner şeridi (banner-section)"
+* `offer_banner_2` → "Alt tanıtım banner'ları — ikinci ürün listesinin altındaki
+  kutulu banner şeridi (gift-card-section)"
+
+Kullanıcının adıyla andığı iki bölüm tam olarak bunlar. Listede olmayan bir
+anahtar hata değil; o durumda anahtarın kendisi gösteriliyor.
+
+### 3. Referanslar isimle gösteriliyor
+
+Ana sayfa ürünleri `sto_RECno`, kategorileri `san_RECno` ile referanslıyor.
+Panelde "83308" göstermek, operatörden 8.238 ürünlük katalogda o numarayı
+hatırlamasını istemek olurdu. İsimler Mikro'dan **tek sorguda** çözülüyor; dört
+ürün listesi × sekizer ürün = 32 gidiş-dönüş yerine bir.
+
+Referans ERP'den kalkmışsa `ref_ad` null geliyor ve panel bunu *"Mikro'da
+bulunamadı — #83308"* diye **görünür** kılıyor. Sessiz bir boşluk, operatörün
+göremeyeceği bir bozukluk demekti.
+
+Yeni referans eklenirken hedefin Mikro'da var olduğu **doğrulanıyor**: olmayan
+bir numara kaydedilirse vitrinde sessizce eksik bir karo çıkardı.
+
+### 4. Öğe görselleri
+
+Banner ve hizmet ikonları ürün görselleriyle **aynı depoya** yazılıyor
+(`SIMGE_IMAGE_BLOB`): aynı küçültme, aynı içerik adresli tekilleştirme.
+Öğenin `image_tr` / `image_en` sütununa yazılan şey **adres**, ve çizimde okunan
+tek yer orası — tek doğru kaynak.
+
+Yanına ayrıca `owner_type = 'HOME'` bağı kuruluyor, anahtarı `"<öğe id>:<dil>"`.
+Bu bağ çizim için kullanılmıyor; **baytların sahipsiz görünmemesi** için var.
+V17'nin sonundaki bakım sorgusu hiçbir bağı olmayan baytları "öksüz" sayıyor ve
+bağ kurulmasaydı yayında olan bir banner'ın baytları o listede çıkardı.
+
+Dil ayrı tutuluyor çünkü banner'ların üzerinde yazı var; TR ve EN aynı dosya
+olamıyor. EN boş bırakılırsa vitrin TR görselini kullanıyor.
+
+### 5. Yetki
+
+Uçlar `ADMIN` **ve** `ICERIK`'e açık: ana sayfada hangi banner'ın ya da hangi
+ürünün görüneceğine karar vermek içerik işi, cari açma yetkisi gerektirmiyor.
+Depo ayarı buna **dahil değil** (D-152).
+
+### Doğrulama
+
+Dört servis ayakta, gerçek veriyle:
+
+| Kontrol | Sonuç |
+|---|---|
+| `GET /api/storefront/home` | 11 bölüm, etiketleriyle |
+| Ürün referansları | `5481 → TOZ SEKER 50KG`, `8313 → KOMILI 5LT SIZMA Z.YAGI` |
+| Kategori referansları | `1 → SIGARALAR [01]`, `2 → SUT-KAHVALTILIK URUNLER [02]` |
+| `offer_banner_2` öğeleri | 3 banner, TR/EN görselleri ayrı |
+| Yeni banner öğesi + görsel yükleme | `gorsel_tr = /api/images/<hash>/detail.jpg` |
+| Görsel vitrin backend'inden | **HTTP 200**, `image/jpeg`, 9.691 bayt |
+| Test öğesi silindikten sonra | bölüm öğe sayısı başlangıca döndü (3) |
+
+**Denenmemiş:** panel arayüzü tarayıcıda tıklanarak gezilmedi; doğrulama HTTP
+uçları üzerinden yapıldı. Angular derlemesi (`npm run build`) temiz, ama
+sürükle-sıra, dosya seçme ve önizleme davranışı ekranda görülmedi.

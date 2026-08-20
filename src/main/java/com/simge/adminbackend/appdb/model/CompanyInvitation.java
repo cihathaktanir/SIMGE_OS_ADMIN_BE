@@ -70,6 +70,10 @@ public class CompanyInvitation {
     @Column(name = "full_name")
     private String fullName;
 
+    /** Başvurudan taşınan telefon (D-149); meslektaş davetinde null. */
+    @Column(name = "phone")
+    private String phone;
+
     @Column(name = "token_hash", nullable = false)
     private String tokenHash;
 

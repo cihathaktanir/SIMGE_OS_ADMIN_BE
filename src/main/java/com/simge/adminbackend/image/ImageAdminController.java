@@ -28,6 +28,7 @@ import org.springframework.web.multipart.MultipartFile;
 import com.simge.adminbackend.appdb.model.ImageLink;
 import com.simge.adminbackend.common.TurkishSearch;
 import com.simge.adminbackend.erp.model.Stok;
+import com.simge.adminbackend.erp.repository.StokAramaRepository;
 import com.simge.adminbackend.erp.repository.StokRepository;
 import com.simge.adminbackend.staff.StaffPrincipal;
 
@@ -61,10 +62,14 @@ public class ImageAdminController {
 
     private final ImageService imageService;
     private final StokRepository stokRepository;
+    /** Çok kelimeli arama (D-151); koşul sayısı girdiye bağlı olduğu için ayrı. */
+    private final StokAramaRepository stokArama;
 
-    public ImageAdminController(ImageService imageService, StokRepository stokRepository) {
+    public ImageAdminController(ImageService imageService, StokRepository stokRepository,
+            StokAramaRepository stokArama) {
         this.imageService = imageService;
         this.stokRepository = stokRepository;
+        this.stokArama = stokArama;
     }
 
     // --- Ürün arama -------------------------------------------------------
@@ -81,14 +86,19 @@ public class ImageAdminController {
             return ResponseEntity.ok(Map.of("data", List.of()));
         }
 
-        // Tek kelimeyle sınırlı: bu bir katalog araması değil, "şu ürünü bul"
-        // kutusu. Çok kelimeli arama vitrinde var (D-136) ve orada birden fazla
-        // LIKE'ı birleştiren bir kurucu gerekiyordu; burada gereksiz.
-        String ilk = kelimeler.get(0);
-        List<Stok> bulunan = stokRepository.ara(
-                TurkishSearch.containsPattern(ilk),
-                TurkishSearch.startsWithPattern(ilk),
-                PageRequest.of(0, ARAMA_SINIRI));
+        // TÜM kelimeler AND'leniyor (D-151).
+        //
+        // Öncesinde yalnızca ilk kelime kullanılıyordu ("bu bir katalog araması
+        // değil" gerekçesiyle). Operatörün gerçekte yaptığı şey ürünün tam adını
+        // yapıştırmak: "TOZ ŞEKER 50KG" sorguya "TOZ" olarak gidiyor, toz
+        // biberden toz deterjana kadar her şey dönüyor ve aranan ürün sonuç
+        // sınırının dışında kalabiliyordu.
+        List<String> desenler = kelimeler.stream()
+                .map(TurkishSearch::containsPattern)
+                .toList();
+
+        List<Stok> bulunan = stokArama.ara(desenler,
+                TurkishSearch.startsWithPattern(kelimeler.get(0)), ARAMA_SINIRI);
 
         List<String> kodlar = bulunan.stream().map(Stok::getKod).toList();
         Set<String> gorselli = new HashSet<>(
@@ -99,6 +109,10 @@ public class ImageAdminController {
             Map<String, Object> satir = new LinkedHashMap<>();
             satir.put("sto_kod", s.getKod());
             satir.put("isim", s.getIsim());
+            // Vitrin yönetimi ürünleri sto_RECno ile referanslıyor (D-154);
+            // görsel yükleme ise sto_kod ile. Aynı arama iki ekranı besliyor,
+            // bu yüzden ikisi de dönüyor.
+            satir.put("recno", s.getRecno());
             satir.put("gorsel_var", gorselli.contains(s.getKod() == null ? "" : s.getKod().trim()));
             data.add(satir);
         }

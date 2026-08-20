@@ -77,8 +77,13 @@ class RegistrationReviewErpTest {
         when(requestRepository.findById(42L)).thenReturn(Optional.of(basvuru));
         when(requestRepository.save(any(RegistrationRequest.class)))
                 .thenAnswer(i -> i.getArgument(0));
+        // D-149: imzaya telefon eklendi (başvurudan davete taşınıyor).
         when(inviteService.invite(anyString(), anyString(), anyLong(), anyString(),
-                anyString(), anyString())).thenReturn(new CompanyInvitation());
+                anyString(), anyString(), any())).thenReturn(new CompanyInvitation());
+        // Varsayılan: posta gönderilebiliyor. D-147 ile onay akışı ERP'ye
+        // yazmadan önce bunu soruyor; sahte nesnenin varsayılanı false olduğu
+        // için açıkça true dönmesi gerekiyor.
+        when(inviteService.gonderilebilirMi()).thenReturn(true);
     }
 
     private CariWriter.YeniCari veri() {
@@ -118,7 +123,7 @@ class RegistrationReviewErpTest {
         assertEquals(List.of("M-500"), hata.getKodlar());
         verify(cariWriter, never()).yeniCari(any());
         verify(inviteService, never()).invite(anyString(), anyString(), anyLong(), anyString(),
-                anyString(), anyString());
+                anyString(), anyString(), any());
     }
 
     @Test
@@ -143,7 +148,7 @@ class RegistrationReviewErpTest {
 
         verify(cariWriter, never()).epostaYaz(anyString(), anyString());
         verify(inviteService).invite(anyString(), anyString(), anyLong(), anyString(),
-                anyString(), anyString());
+                anyString(), anyString(), any());
     }
 
     @Test
@@ -169,7 +174,7 @@ class RegistrationReviewErpTest {
                 () -> service.approve(personel, 42L, "M-500", "a@b.test", null));
 
         verify(inviteService, never()).invite(anyString(), anyString(), anyLong(), anyString(),
-                anyString(), anyString());
+                anyString(), anyString(), any());
     }
 
     @Test
@@ -194,6 +199,50 @@ class RegistrationReviewErpTest {
                 () -> service.approve(personel, 42L, "YOK", "a@b.test", null));
 
         verify(cariWriter, never()).epostaYaz(anyString(), anyString());
+    }
+
+    // ------------------------------------------------- posta yoksa ERP'ye dokunma
+
+    @Test
+    @DisplayName("Posta gönderilemiyorsa YENİ CARİ AÇILMAZ (D-147)")
+    void postaYoksaCariAcilmaz() {
+        // Gerçekte yaşandı: SMTP yapılandırılmamışken onaylandı, Mikro'da cari
+        // açıldı, davet gidemedi. Bu servisin transaction'ı geri sarıldı ama
+        // Mikro BAŞKA bir veritabanı — oradaki yazma commit'lenmiş kaldı.
+        when(kodUretici.ayniVergiNoluKodlar("1234567890")).thenReturn(List.of());
+        when(inviteService.gonderilebilirMi()).thenReturn(false);
+
+        assertThrows(CompanyInviteService.MailUnavailableException.class,
+                () -> service.yeniCariAcarakOnayla(personel, 42L, veri(), "not"));
+
+        verify(cariWriter, never()).yeniCari(any());
+        verify(inviteService, never()).invite(anyString(), anyString(), anyLong(), anyString(),
+                anyString(), anyString(), any());
+    }
+
+    @Test
+    @DisplayName("Posta gönderilemiyorsa ERP e-posta alanına da YAZILMAZ (D-147)")
+    void postaYoksaErpEpostaYazilmaz() {
+        when(cariLookup.byKod("M-500")).thenReturn(Optional.of(cari()));
+        when(inviteService.gonderilebilirMi()).thenReturn(false);
+
+        assertThrows(CompanyInviteService.MailUnavailableException.class,
+                () -> service.approve(personel, 42L, "M-500", "a@b.test", null));
+
+        verify(cariWriter, never()).epostaYaz(anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("Posta kontrolü, başvuru PENDING değilse ERP'den önce yapılmaz")
+    void zatenIncelenmisBasvuruPostayiSinamaz() {
+        // Sıra önemli: önce "bu başvuru işlenebilir mi", sonra posta. Aksi hâlde
+        // her çift tıklama boşuna bir SMTP el sıkışması açardı.
+        basvuru.setStatus(RegistrationRequest.STATUS_APPROVED);
+
+        assertThrows(RegistrationReviewService.AlreadyReviewedException.class,
+                () -> service.yeniCariAcarakOnayla(personel, 42L, veri(), null));
+
+        verify(inviteService, never()).gonderilebilirMi();
     }
 
     private CariHesap cari() {

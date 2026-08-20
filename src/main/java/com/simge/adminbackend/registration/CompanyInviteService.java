@@ -79,7 +79,7 @@ public class CompanyInviteService {
      */
     @Transactional(transactionManager = "appTransactionManager")
     public CompanyInvitation invite(String cariKod, String companyName, Long staffId,
-            String staffName, String email, String fullName) {
+            String staffName, String email, String fullName, String phone) {
 
         String normalized = email == null ? "" : email.trim().toLowerCase(Locale.ROOT);
 
@@ -106,6 +106,8 @@ public class CompanyInviteService {
         invitation.setInvitedByType(CompanyInvitation.INVITER_STAFF);
         invitation.setEmail(normalized);
         invitation.setFullName(fullName == null || fullName.isBlank() ? null : fullName.trim());
+        // Basvurudan tasinan telefon (D-149): davet kabul ekrani ikinci kez sormasin.
+        invitation.setPhone(phone == null || phone.isBlank() ? null : phone.trim());
         invitation.setTokenHash(SecretCodes.hash(token));
         invitation.setStatus(CompanyInvitation.STATUS_PENDING);
         invitation.setExpiresAt(Instant.now().plus(TOKEN_TTL));
@@ -128,6 +130,21 @@ public class CompanyInviteService {
         log.info("Panelden davet gönderildi: invitationId={} cariKod={} personel={}",
                 invitation.getId(), cariKod, staffId);
         return invitation;
+    }
+
+    /**
+     * Davet gönderilebilir durumda mı? (ADR D-147)
+     *
+     * <p>
+     * <b>ERP'ye yazmadan ÖNCE sorulmalı.</b> Onay akışı önce Mikro'ya cari yazıp
+     * sonra daveti gönderiyor; iki ayrı veritabanı olduğu için ortak transaction
+     * yok ve posta gidemeyince ERP'de öksüz bir cari kalıyor. Bu kontrol, en sık
+     * karşılaşılan iki sebebi (SMTP hiç yapılandırılmamış / kimlik doğrulama
+     * başarısız) ERP'ye dokunulmadan yakalıyor.
+     * </p>
+     */
+    public boolean gonderilebilirMi() {
+        return mailService.hazirMi();
     }
 
     /** Bu adresle zaten bir vitrin hesabı var. */
