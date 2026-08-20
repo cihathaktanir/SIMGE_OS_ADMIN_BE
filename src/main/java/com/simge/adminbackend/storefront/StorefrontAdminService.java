@@ -433,8 +433,8 @@ public class StorefrontAdminService {
         dto.put("sira", b.getSortOrder());
         dto.put("baslik_tr", b.getTitleTr());
         dto.put("baslik_en", b.getTitleEn());
-        dto.put("altbaslik_tr", b.getSubtitleTr());
-        dto.put("altbaslik_en", b.getSubtitleEn());
+        dto.put("alt_baslik_tr", b.getSubtitleTr());
+        dto.put("alt_baslik_en", b.getSubtitleEn());
         // Panel hangi alanları göstereceğine buna bakarak karar veriyor;
         // bölüm türünü arayüzde yeniden yorumlamak iki yerde bilgi demekti.
         dto.put("oge_turu", refTuru(b.getSectionType()));
@@ -460,8 +460,8 @@ public class StorefrontAdminService {
         dto.put("gorsel_en", o.getImageEn());
         dto.put("baslik_tr", o.getTitleTr());
         dto.put("baslik_en", o.getTitleEn());
-        dto.put("altbaslik_tr", o.getSubtitleTr());
-        dto.put("altbaslik_en", o.getSubtitleEn());
+        dto.put("alt_baslik_tr", o.getSubtitleTr());
+        dto.put("alt_baslik_en", o.getSubtitleEn());
         dto.put("etiket_tr", o.getTagTr());
         dto.put("etiket_en", o.getTagEn());
         dto.put("buton_tr", o.getButtonTextTr());
