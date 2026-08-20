@@ -976,3 +976,86 @@ Dört servis ayakta, gerçek veriyle:
 **Denenmemiş:** panel arayüzü tarayıcıda tıklanarak gezilmedi; doğrulama HTTP
 uçları üzerinden yapıldı. Angular derlemesi (`npm run build`) temiz, ama
 sürükle-sıra, dosya seçme ve önizleme davranışı ekranda görülmedi.
+
+---
+
+## D-155 — JSON alan adları snake_case; kablo sözleşmesi testle sabitlendi
+
+**Tarih:** 2026-08-20
+**Durum:** Kabul edildi
+**Bağlam:** Kullanıcı panelde depo ekranını açtı ve şu hatayı aldı:
+
+```
+TypeError: Cannot read properties of undefined (reading 'toLocaleString')
+    at _SettingsComponent.sayi (settings.component.ts:99:14)
+```
+
+**Sebep:** `application.properties` içinde
+`spring.jackson.property-naming-strategy=SNAKE_CASE` var. Java'daki
+`fiyatliUrun` kabloya **`fiyatli_urun`** olarak çıkıyor; panel camelCase
+okuyordu, alan `undefined` geliyordu.
+
+### Asıl tehlikeli olan: yazma tarafı
+
+Aynı ayar **deserialization**'a da uygulanıyor. `OgeIstegi` ve `BolumGuncelle`
+alanları (`baslikTr`, `refId`, `bagTuru`…) istek gövdesinde `baslik_tr`,
+`ref_id`, `bag_turu` olarak bekleniyordu; panel camelCase gönderiyordu.
+
+Jackson bilinmeyen alanda **istisna fırlatmıyor** (`FAIL_ON_UNKNOWN_PROPERTIES`
+Spring Boot'ta kapalı): alan `null` kalıyor ve servisin "null bırakılan alan
+değişmez" kuralıyla birleşince **kayıt sessizce hiçbir şey yapmıyordu**.
+Operatöre hata da gösterilmiyordu. Bu, D-150'de bedeli ödenen hata sınıfının
+aynısı: ekran "oldu" diyor, hiçbir şey olmuyor.
+
+### Neden uçtan uca doğrulamada kaçtı
+
+İki sebep, ikisi de kayda değer:
+
+1. **Gönderilen gövdelerin hepsi tek kelimelikti** — `aktif`, `depo`, `ogeler`.
+   Tek kelimede SNAKE_CASE hiçbir şeyi değiştirmiyor. Çok kelimeli hiçbir alan
+   denenmemişti.
+2. **Hata ekrana yazdı ve görmezden gelindi.** İlk depo listesi çıktısında
+   fiyatlı/stoklu sütunları boştu; bu bir PowerShell biçimlendirme hatasına
+   yoruldu. Boş sütun aslında `undefined` alanın kendisiydi.
+
+### Düzeltme
+
+* Panel arayüzü okuma ve yazmada snake_case kullanıyor.
+* **Okuma/yazma asimetrisi giderildi:** yanıt `altbaslik_tr` diyordu, istek
+  `alt_baslik_tr` bekliyordu. İkisi de `alt_baslik_tr` oldu. Bu asimetri tam
+  olarak bu hata sınıfını üreten şeydi ve bırakılsaydı bir sonrakini de
+  üretecekti.
+
+### springdoc yanlış söylüyor
+
+Çalışan uygulamanın `/v3/api-docs` çıktısı `baslikTr` diyor — springdoc
+adlandırma stratejisini uygulamıyor. Yani **API dokümantasyonu bu konuda
+yanlış**; kabloya çıkan ad Jackson'ın ürettiğidir. Şemaya bakıp camelCase
+gönderen bir sonraki geliştirici aynı sessiz kayba düşerdi.
+
+Bu yüzden iki ayrı test var:
+
+| Test | Cevapladığı soru |
+|---|---|
+| `JsonAlanAdlariTest` | SNAKE_CASE bu record'larda hangi adları üretir? |
+| `JacksonYapilandirmaTest` (`@JsonTest`) | **Bu uygulamada** SNAKE_CASE gerçekten açık mı? |
+
+İkincisi Spring Boot'un `application.properties`'ten kurduğu mapper'ı enjekte
+ediyor, elle kurulanı değil — springdoc'a güvenilemeyeceği anlaşıldıktan sonra
+eklendi. camelCase gövdenin sessizce yok sayıldığı da testle **belgelendi**;
+amaç davranışı savunmak değil, mekanizmayı görünür tutmak.
+
+### Doğrulama
+
+| Kontrol | Sonuç |
+|---|---|
+| Uygulamanın mapper'ı yanıtta | `fiyatli_urun`, `stoklu_urun` |
+| Uygulamanın mapper'ı istekte | `baslik_tr`, `ref_id`, `bag_turu` okunuyor |
+| camelCase gövde | istisna yok, alan **null** (sessiz kayıp belgelendi) |
+| Panel paketi | **104 test, 0 hata** (5 atlandı) |
+| Panel arayüzü derlemesi | temiz |
+
+**Denenmemiş:** düzeltme HTTP uçlarından tekrar geçirilmedi. Doğrulama için
+açtığım geçici personel hesabı kullanıcının isteğiyle silindi ve geriye parolasını
+bilmediğim `admin` kaldı. Kablo sözleşmesi artık uygulamanın gerçek
+yapılandırmasıyla test altında; ekranda son onayı kullanıcı verecek.
