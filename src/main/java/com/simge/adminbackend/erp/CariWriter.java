@@ -33,9 +33,24 @@ import org.springframework.util.FileCopyUtils;
  * </p>
  *
  * <p>
- * <b>Yapabildiği yalnızca iki şey var:</b> yeni cari açmak ve var olan bir
- * carinin <b>boş</b> e-posta alanını doldurmak. Silme yok, başka alan
- * güncelleme yok, toplu işlem yok.
+ * <b>Yapabildiği şeyler (D-173 ile genişledi):</b>
+ * </p>
+ * <ol>
+ *   <li>yeni cari açmak (ana adres satırıyla birlikte),</li>
+ *   <li>var olan bir carinin <b>boş</b> e-posta alanını doldurmak,</li>
+ *   <li>var olan bir cariye <b>ek adres</b> yazmak ({@link #yeniAdres}),</li>
+ *   <li>carinin unvan / telefon / e-posta alanlarını ve fatura adresi
+ *       işaretçisini güncellemek ({@link #cariGuncelle}).</li>
+ * </ol>
+ *
+ * <p>
+ * <b>Silme yok, toplu işlem yok.</b> Ve önemli bir sınır: var olan bir
+ * <b>adres satırının içeriği değiştirilmiyor</b>. Sebep geçmiş —
+ * {@code SIPARISLER.sip_adresno} ve {@code STOK_HAREKETLERI.sth_adres_no} o
+ * satırı numarayla gösteriyor; metnini değiştirmek üç yıl önceki irsaliyenin
+ * de adresini değiştirirdi. Taşınan bir firma için doğru işlem <b>yeni adres
+ * ekleyip fatura işaretçisini ona çevirmek</b>. Böylece
+ * {@code CARI_HESAP_ADRESLERI} yalnızca INSERT alıyor.
  * </p>
  *
  * <h2>Neden 182 sütunun hepsi yazılıyor</h2>
@@ -81,12 +96,23 @@ public class CariWriter {
     private final String insertCari;
     private final String insertAdres;
 
+    /**
+     * Var olan cariye EK adres yazan betik (D-173).
+     *
+     * <p>
+     * {@link #insertAdres}'ten farkı: orada {@code adr_adres_no} sabit 1,
+     * burada parametre. Ayrıca telefon üç alana bölünmüş geliyor.
+     * </p>
+     */
+    private final String insertAdresEk;
+
     public CariWriter(@Qualifier("mikroDataSource") javax.sql.DataSource mikroDataSource,
             @Value("${simge.erp.mikro-user-id:2}") int mikroKullanici) {
         this.jdbc = new NamedParameterJdbcTemplate(mikroDataSource);
         this.mikroKullanici = mikroKullanici;
         this.insertCari = oku("erp/insert-cari.sql");
         this.insertAdres = oku("erp/insert-cari-adres.sql");
+        this.insertAdresEk = oku("erp/insert-cari-adres-ek.sql");
     }
 
     /**
@@ -124,6 +150,8 @@ public class CariWriter {
         long recNo = uretilenAnahtar(anahtar, "CARI_HESAPLAR");
         kimlikCiftiniTamamla("CARI_HESAPLAR", "cari_RECno", "cari_RECid_RECno", recNo);
 
+        TelefonAyirici.Telefon telefon = TelefonAyirici.ayir(veri.telefon());
+
         MapSqlParameterSource a = new MapSqlParameterSource()
                 .addValue("cariKod", veri.cariKod())
                 .addValue("adres", bos(veri.adres()))
@@ -132,7 +160,14 @@ public class CariWriter {
                 .addValue("il", bos(veri.il()))
                 .addValue("ulke", bos(veri.ulke()))
                 .addValue("postaKodu", bos(veri.postaKodu()))
-                .addValue("telefon", bos(veri.telefon()))
+                // Telefon ÜÇ ALANA bölünüyor (D-173). Öncesinde numaranın
+                // tamamı adr_tel_no1'e yazılıyordu ve o sütun 10 karakter:
+                // normal bir cep numarası (11 hane) INSERT'i truncation
+                // hatasıyla düşürürdü. Ek adres yolu da aynı yardımcıyı
+                // kullanıyor — kural tek yerde.
+                .addValue("telUlke", telefon.ulkeKodu())
+                .addValue("telBolge", telefon.bolgeKodu())
+                .addValue("telNo", telefon.numara())
                 .addValue("mikroKullanici", mikroKullanici)
                 .addValue("simdi", Timestamp.valueOf(simdi));
 
@@ -180,6 +215,225 @@ public class CariWriter {
         }
         log.info("Mikro'da cari e-postası dolduruldu: {}", cariKod);
         return true;
+    }
+
+    // ------------------------------------------------------------------
+    // D-173 — cari güncelleme kuyruğunun ERP tarafı
+    // ------------------------------------------------------------------
+
+    /**
+     * Var olan bir cariye <b>ek adres</b> yazar.
+     *
+     * <p>
+     * Adres numarası burada hesaplanıyor: {@code MAX(adr_adres_no) + 1}.
+     * Sabit bir başlangıç varsayılmıyor — ölçüldü, 1.982 aktif satırın
+     * 205'inde numara <b>0</b>, yani "yeni adres = 2" varsayımı yanlış olurdu.
+     * </p>
+     *
+     * <p>
+     * <b>Yarış durumu veritabanında kesiliyor.</b> {@code (cari_kod,
+     * adres_no)} çifti Mikro'da UNIQUE indeksli
+     * ({@code NDX_CARI_HESAP_ADRESLERI_02}). İki operatör aynı anda aktarırsa
+     * ikincisi sessizce bozmaz, {@link AdresNumarasiCakisti} fırlatır ve
+     * panel "tekrar deneyin" der. Bilerek işlem içinde yeniden denemiyoruz:
+     * başarısız bir ifadeden sonra aynı işlemde devam etmek SQL Server'da
+     * güvenilir değil.
+     * </p>
+     *
+     * @return Mikro'da oluşan {@code adr_adres_no}
+     */
+    @Transactional(transactionManager = "mikroTransactionManager")
+    public int yeniAdres(YeniAdres veri) {
+        if (!cariVar(veri.cariKod())) {
+            throw new CariBulunamadi(veri.cariKod());
+        }
+
+        int adresNo = sonrakiAdresNo(veri.cariKod());
+        LocalDateTime simdi = LocalDateTime.now();
+
+        MapSqlParameterSource p = new MapSqlParameterSource()
+                .addValue("cariKod", veri.cariKod())
+                .addValue("adresNo", adresNo)
+                .addValue("adresKodu", bos(veri.adresKodu()))
+                .addValue("cadde", bos(veri.cadde()))
+                .addValue("mahalle", bos(veri.mahalle()))
+                .addValue("sokak", bos(veri.sokak()))
+                .addValue("semt", bos(veri.semt()))
+                .addValue("aptNo", bos(veri.aptNo()))
+                .addValue("daireNo", bos(veri.daireNo()))
+                .addValue("ilce", bos(veri.ilce()))
+                .addValue("il", bos(veri.il()))
+                .addValue("ulke", bos(veri.ulke()))
+                .addValue("postaKodu", bos(veri.postaKodu()))
+                .addValue("telUlke", bos(veri.telUlkeKodu()))
+                .addValue("telBolge", bos(veri.telBolgeKodu()))
+                .addValue("telNo", bos(veri.telNumara()))
+                .addValue("mikroKullanici", mikroKullanici)
+                .addValue("simdi", Timestamp.valueOf(simdi));
+
+        KeyHolder anahtar = new GeneratedKeyHolder();
+        try {
+            jdbc.update(insertAdresEk, p, anahtar, new String[] { "adr_RECno" });
+        } catch (DuplicateKeyException e) {
+            throw new AdresNumarasiCakisti(veri.cariKod(), adresNo);
+        }
+
+        kimlikCiftiniTamamla("CARI_HESAP_ADRESLERI", "adr_RECno", "adr_RECid_RECno",
+                uretilenAnahtar(anahtar, "CARI_HESAP_ADRESLERI"));
+
+        log.info("Mikro'ya ek adres yazıldı: cari={} adresNo={}", veri.cariKod(), adresNo);
+        return adresNo;
+    }
+
+    /**
+     * Carinin bilgi alanlarını ve/veya fatura adresi işaretçisini günceller.
+     *
+     * <p>
+     * <b>Null bırakılan alan değişmez.</b> Hiçbir alan verilmezse hiç sorgu
+     * çalışmaz.
+     * </p>
+     *
+     * <p>
+     * {@code faturaAdresNo} verilirse önce o numaranın <b>gerçekten var
+     * olduğu</b> doğrulanıyor. Mikro'da adres tablosuna hiç foreign key yok
+     * (0 kısıt): olmayan bir numara yazmak hata vermez, sipariş kaydedilir
+     * ama irsaliyede adres boş çıkar. Sessiz bozulmayı burada kesiyoruz.
+     * </p>
+     *
+     * @return gerçekten güncellenen satır sayısı (0 = cari bulunamadı)
+     */
+    @Transactional(transactionManager = "mikroTransactionManager")
+    public int cariGuncelle(CariGuncelle veri) {
+        StringBuilder set = new StringBuilder();
+        Map<String, Object> p = new HashMap<>();
+        p.put("cariKod", veri.cariKod());
+
+        if (veri.unvan() != null) {
+            set.append("cari_unvan1 = :unvan, ");
+            p.put("unvan", bos(veri.unvan()));
+        }
+        if (veri.telefon() != null) {
+            set.append("cari_CepTel = :telefon, ");
+            p.put("telefon", bos(veri.telefon()));
+        }
+        if (veri.email() != null) {
+            set.append("cari_EMail = :email, ");
+            p.put("email", bos(veri.email()));
+        }
+        if (veri.faturaAdresNo() != null) {
+            if (!adresVar(veri.cariKod(), veri.faturaAdresNo())) {
+                throw new AdresBulunamadi(veri.cariKod(), veri.faturaAdresNo());
+            }
+            set.append("cari_fatura_adres_no = :faturaAdresNo, ");
+            p.put("faturaAdresNo", veri.faturaAdresNo());
+        }
+
+        if (set.isEmpty()) {
+            return 0;
+        }
+
+        p.put("kullanici", mikroKullanici);
+        p.put("simdi", Timestamp.valueOf(LocalDateTime.now()));
+
+        int etkilenen = jdbc.update("UPDATE CARI_HESAPLAR SET " + set
+                + " cari_lastup_user = :kullanici, cari_lastup_date = :simdi"
+                + " WHERE cari_kod = :cariKod", p);
+
+        if (etkilenen == 0) {
+            log.warn("Cari güncellenemedi, kod bulunamadı: {}", veri.cariKod());
+        } else {
+            log.info("Mikro'da cari güncellendi: {} (alanlar: {})",
+                    veri.cariKod(), p.keySet());
+        }
+        return etkilenen;
+    }
+
+    /**
+     * Bir carinin sonraki adres numarası.
+     *
+     * <p>
+     * Hiç adresi yoksa 1'den başlıyor: yeni cari açılışında yazılan ana adres
+     * de 1 numaralı ({@code insert-cari-adres.sql}).
+     * </p>
+     */
+    private int sonrakiAdresNo(String cariKod) {
+        Integer enYuksek = jdbc.queryForObject(
+                "SELECT MAX(adr_adres_no) FROM CARI_HESAP_ADRESLERI WHERE adr_cari_kod = :cariKod",
+                Map.of("cariKod", cariKod), Integer.class);
+        return enYuksek == null ? 1 : enYuksek + 1;
+    }
+
+    private boolean cariVar(String cariKod) {
+        Integer n = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM CARI_HESAPLAR WHERE cari_kod = :cariKod",
+                Map.of("cariKod", cariKod), Integer.class);
+        return n != null && n > 0;
+    }
+
+    private boolean adresVar(String cariKod, int adresNo) {
+        Integer n = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM CARI_HESAP_ADRESLERI
+                 WHERE adr_cari_kod = :cariKod AND adr_adres_no = :adresNo
+                   AND (adr_iptal IS NULL OR adr_iptal = 0)
+                """, Map.of("cariKod", cariKod, "adresNo", adresNo), Integer.class);
+        return n != null && n > 0;
+    }
+
+    /**
+     * Ek adres için gereken alanlar.
+     *
+     * <p>
+     * Telefon <b>bölünmüş</b> geliyor ({@link TelefonAyirici}): Mikro üç ayrı
+     * sütunda tutuyor ve {@code adr_tel_no1} yalnızca 10 karakter.
+     * </p>
+     */
+    public record YeniAdres(
+            String cariKod,
+            String adresKodu,
+            String cadde,
+            String mahalle,
+            String sokak,
+            String semt,
+            String aptNo,
+            String daireNo,
+            String ilce,
+            String il,
+            String ulke,
+            String postaKodu,
+            String telUlkeKodu,
+            String telBolgeKodu,
+            String telNumara) {
+    }
+
+    /** Cari güncellemesi; {@code null} alan değişmez. */
+    public record CariGuncelle(
+            String cariKod,
+            String unvan,
+            String telefon,
+            String email,
+            Integer faturaAdresNo) {
+    }
+
+    /** Aktarılmak istenen cari Mikro'da yok. */
+    public static class CariBulunamadi extends RuntimeException {
+        public CariBulunamadi(String cariKod) {
+            super("Mikro'da böyle bir cari yok: " + cariKod);
+        }
+    }
+
+    /** Fatura adresi olarak işaretlenmek istenen numara o caride yok. */
+    public static class AdresBulunamadi extends RuntimeException {
+        public AdresBulunamadi(String cariKod, int adresNo) {
+            super("Bu carinin " + adresNo + " numaralı adresi yok: " + cariKod);
+        }
+    }
+
+    /** Aynı anda başka bir aktarma yapıldı; numara kapılmış. */
+    public static class AdresNumarasiCakisti extends RuntimeException {
+        public AdresNumarasiCakisti(String cariKod, int adresNo) {
+            super("Adres numarası " + adresNo + " bu sırada başkası tarafından kullanıldı ("
+                    + cariKod + "). Tekrar deneyin.");
+        }
     }
 
     /**

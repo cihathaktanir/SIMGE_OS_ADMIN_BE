@@ -1,25 +1,30 @@
-﻿-- ---------------------------------------------------------------------------
---  Yeni carinin ANA ADRES satiri. (ADR D-127)
+-- ---------------------------------------------------------------------------
+--  Var olan bir cariye EK adres satiri. (ADR D-173)
 --
---  Bu dosya da olculerek uretildi: sablon, adr_adres_no = 1 olan 1753 ana
---  adres satirindan alindi.
+--  insert-cari-adres.sql'den farki: orasi cari acilisinda calisiyor ve
+--  adr_adres_no = 1 SABIT yaziyor. Burada numara PARAMETRE, cunku ikinci,
+--  ucuncu ... adres eklenirken MAX+1 hesaplaniyor.
 --
---  Neden ayri bir satir gerekiyor: CARI_HESAPLAR'da adres yok, orada sadece
---  cari_fatura_adres_no = 1 ve cari_sevk_adres_no = 1 isaretcileri var. O
---  isaretciler bu tabloda adr_adres_no = 1 olan satiri gosterir. Adres satiri
---  yazilmazsa cari acilir ama faturada adres bos kalir.
+--  NUMARA 1'DEN BASLAMIYOR OLABILIR. Olculdu: 1.982 aktif satirin 205'inde
+--  adr_adres_no = 0. Yani "yeni adres = mevcut sayi + 1" varsayimi yanlis;
+--  cagiran taraf MAX(adr_adres_no)+1 hesapliyor (bkz. CariWriter.yeniAdres).
+--  (cari_kod, adres_no) cifti Mikro'da UNIQUE indeksli
+--  (NDX_CARI_HESAP_ADRESLERI_02), dolayisiyla es zamanli iki ekleme sessizce
+--  bozmaz, ikincisi hata verir.
 --
---  TELEFON UC ALANA BOLUNMUS geliyor (ADR D-173). Onceden numaranin TAMAMI
---  adr_tel_no1'e yaziliyordu; o sutun 10 KARAKTER ve normal bir cep numarasi
---  (05321234567, 11 hane) INSERT'i truncation hatasiyla dusururdu. Bugune
---  kadar patlamamis olmasinin tek sebebi girilen numaralarin kisa olmasi.
---  Bolme CariWriter icinde TelefonAyirici ile yapiliyor; ek adres betigi de
---  ayni yardimciyi kullaniyor.
+--  TELEFON UC ALANA BOLUNMUS geliyor. Mikro boyle tutuyor (olculdu: dolu
+--  satirlarin hepsi '90' / '312' / '3976498'). Tek alanda birlestirip
+--  yazmak, adr_tel_no1 10 karakter oldugu icin normal bir cep numarasinda
+--  (11 hane) truncation hatasi veriyor.
+--
+--  Sabitler tahmin degil: sablon, adr_adres_no = 1 olan 1753 ana adres
+--  satirindan olculdu (yontem D-127'de).
 --
 --  adr_RECno IDENTITY. adr_RECid_RECno insert aninda bilinemez; 0 yazilip
 --  ayni islemde SCOPE_IDENTITY() ile guncellenir (bkz. CariWriter).
 -- ---------------------------------------------------------------------------
-INSERT INTO CARI_HESAP_ADRESLERI (    [adr_RECid_DBCno],
+INSERT INTO CARI_HESAP_ADRESLERI (
+    [adr_RECid_DBCno],
     [adr_RECid_RECno],
     [adr_SpecRECno],
     [adr_iptal],
@@ -91,19 +96,19 @@ INSERT INTO CARI_HESAP_ADRESLERI (    [adr_RECid_DBCno],
     '',
     '',
     :cariKod,
-    1,
+    :adresNo,
     0,
-    :adres,
+    :cadde,
     :mahalle,
-    '',
-    '',
-    '',
-    '',
+    :sokak,
+    :semt,
+    :aptNo,
+    :daireNo,
     :postaKodu,
     :ilce,
     :il,
     :ulke,
-    '',
+    :adresKodu,
     :telUlke,
     :telBolge,
     :telNo,

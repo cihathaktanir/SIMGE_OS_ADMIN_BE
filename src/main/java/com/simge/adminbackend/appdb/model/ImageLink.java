@@ -55,6 +55,24 @@ public class ImageLink {
      */
     public static final String OWNER_HOME = "HOME";
 
+    /**
+     * Düz sayfa bloğunun görseli — Hakkımızda tanıtım fotoğrafı ve hizmet
+     * ikonları (ADR D-172).
+     *
+     * <p>
+     * Anahtarı blok kimliği ({@code "7"}). {@code OWNER_HOME}'dan farklı olarak
+     * <b>dil anahtarın parçası değil</b>: bu görsellerin üzerinde yazı yok,
+     * aynı fotoğraf iki dilde de doğru.
+     * </p>
+     *
+     * <p>
+     * Bağ, adresin kendisi {@code SIMGE_PAGE_BLOCK.image_url}'da dursa bile
+     * kuruluyor: V17'nin bakım sorgusu hiçbir bağı olmayan baytları "öksüz"
+     * sayıyor ve yayında olan bir görsel o listede çıkmamalı.
+     * </p>
+     */
+    public static final String OWNER_PAGE = "PAGE";
+
     /** Karoda ve listede gösterilen görselin sırası. */
     public static final int BIRINCIL = 0;
 

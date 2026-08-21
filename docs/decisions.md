@@ -1119,3 +1119,307 @@ tahminine feda etmektir. Bu ayrım bundan sonraki eşikler için de geçerli.
 `WarehouseServiceTest` yeniden yazıldı; testler artık **seçilebildiğini**
 doğruluyor (uyarı dönüyor ama ayara gerçekten yazılıyor). Panel paketi:
 **104 test, 0 hata**.
+
+---
+
+## D-172 — Hakkımızda metni veritabanına taşındı ve İngilizcesi eklendi
+
+**Tarih:** 2026-08-21
+**Durum:** Kabul edildi
+**Kapsam:** `SIMGE_OS_BE`, `SIMGE_OS_FE`, `SIMGE_OS_ADMIN_BE`, `SIMGE_OS_FE_ADMIN`
+
+### Bağlam
+
+Hakkımızda sayfasının metni vitrin paketindeki
+`public/assets/data/themeOptions.json` dosyasının `about_us` anahtarındaydı.
+İki ayrı sorun üretiyordu ve ikisi de aynı sebepten:
+
+1. **İngilizcesi yoktu.** Alanlar `title` / `description` biçimindeydi, yani
+   ortada bir *çeviri* değil tek bir metin vardı. Dil İngilizce'ye
+   çevrildiğinde sayfanın geri kalanı çevriliyor ama gövde metni Türkçe
+   kalıyordu. `ngx-translate` sözlüklerine de konamazdı: 1.482 karakterlik
+   bir tanıtım metni i18n anahtarı değil, içerik.
+2. **Değiştirmek için yeniden yayın gerekiyordu.** Bir telefon numarasını
+   güncellemek "dosyayı düzenle, derle, dağıt" demekti; bunu yapabilecek kişi
+   operatör değil geliştiriciydi.
+
+Ana sayfa aynı yolu D-154'te geçmişti (`SIMGE_HOME_SECTION`, TR/EN sütunlar,
+panelden düzenleme). Bu, o kararın düz sayfalar için karşılığı.
+
+### Karar
+
+İçerik `SIMGE_OS_APP.SIMGE_PAGE_BLOCK` tablosuna taşındı: **panel yazar,
+vitrin okur**.
+
+```
+page_key   block_key    block_type   image_url  title_tr/en  body_tr/en
+about      intro        RICH_TEXT    banner     başlık       5 paragraf
+about      feature_1..4 FEATURE      ikon       kutu başlığı tek satır
+```
+
+Türkçe metin `themeOptions.json`dan **olduğu gibi** taşındı (1.482 karakter,
+birebir aynı) — bu bir yeniden yazım değil, yer değiştirme. İngilizcesi yeni:
+daha önce hiç yoktu.
+
+### Neden yeni bir tablo, neden `SIMGE_HOME_SECTION` değil
+
+- O tablonun anahtarı `theme_slug`: bölümler bir vitrin **temasına** ait.
+  Hakkımızda temaya ait değil, siteye ait.
+- Oradaki metin sütunları `NVARCHAR(255)` / `NVARCHAR(500)`. Tanıtım metni
+  bugün bile 1.482 karakter; oraya sığdırmak metni kesmek olurdu. `body_*`
+  bu yüzden `NVARCHAR(MAX)`.
+
+`page_key` sütunu, bir sonraki düz sayfa için yeni bir tablo açılması
+gerekmesin diye var — ama **bu sürümde yalnızca `about` tohumlandı ve
+sunucu beyaz listeyle yalnızca onu kabul ediyor**. Boş bir genellik
+üretmemek için diğer sayfalar eklenmedi.
+
+### Görsel neden dile göre ayrılmadı
+
+Ana sayfa banner'larında `image_tr` / `image_en` var, çünkü o görsellerin
+**üzerinde yazı** duruyor. Hakkımızda'daki tanıtım fotoğrafı ve hizmet
+ikonlarında yazı yok — aynı fotoğraf iki dilde de doğru. Tek sütun
+(`image_url`) tutuldu; ikiye bölmek operatöre iki kez aynı dosyayı
+yükletmekten başka bir şey yapmazdı.
+
+### Eksik çeviri: boşluk değil, Türkçe
+
+Vitrin ucu bir blokta İngilizce alan boşsa **Türkçesine düşüyor**. Sonuç:
+yeni bir blok eklenip çevirisi henüz girilmemişse İngilizce sayfada boş bir
+kutu değil, Türkçe metin görünüyor. Eksik çeviri kayıp içerikten iyidir.
+
+Bunun bedeli, eksik çevirinin sessiz kalması. Panel bu yüzden yan yana iki
+dil gösteriyor ve eksik olanları **"İngilizcesi eksik"** rozetiyle
+işaretliyor.
+
+Ters yön serbest değil: **açık bir bloğun Türkçe içeriği tamamen
+boşaltılamaz** (sunucu reddediyor). Türkçe hem varsayılan dil hem de
+İngilizcenin yedeği; boşaltılırsa iki dilde birden boş bir kutu kalır.
+Bloğu göstermemenin yolu onu kapatmak.
+
+### Uçlar
+
+| | |
+|---|---|
+| `GET /api/pages/{key}?lang=` | Vitrin (8080). Tek dile çözülmüş, paragraflara bölünmüş. Girişe kapalı — sayfa zaten `authGuard`ın arkasında (D-107). |
+| `GET /api/pages?sayfa=` | Panel (8081). İki dil bir arada, pasif bloklar dahil. `ADMIN` + `ICERIK`. |
+| `PUT /api/pages/blocks/{id}` | Metin/başlık/açık-kapalı. Null alan değişmez, boş dize temizler. |
+| `POST/DELETE /api/pages/blocks/{id}/image` | Görsel; baytlar ürün görselleriyle aynı depoda (`SIMGE_IMAGE_BLOB`). |
+
+Yetki sınırı vitrin ana sayfasıyla aynı: bir tanıtım metnini yazmak içerik
+işi, sistem işi değil — `ICERIK` rolü de erişebiliyor. Depo ayarının
+(`/api/settings`, yalnızca `ADMIN`) aksine bu değişikliğin fiyat ya da stok
+üzerinde etkisi yok.
+
+### Paragraflara bölme sunucuda
+
+Metin, boş satırlarda (ve tek satır sonlarında) paragraflara **sunucu
+tarafında** bölünüyor; vitrin hazır bir dizi alıyor. Bölme daha önce Angular
+bileşenindeydi. Tek bir yerde durması gerekiyordu çünkü aynı kuralı panel de
+önizliyor ("vitrinde N paragraf olarak çıkacak") — iki ayrı bölme kuralı er
+geç ayrışır.
+
+### Silinenler
+
+- `themeOptions.json` → `about_us` anahtarı (30 satır). Ölü veri bırakmak bir
+  sonraki turda "hangisi doğru" sorusunu doğuruyor.
+- `theme-option.interface.ts` → `AboutUs`, `AboutSection` ve yalnızca onlar
+  üzerinden erişilen `Team`, `Member`, `Testimonial`, `Review` (D-145'te
+  bölümler kaldırılmış ama tipler kalmıştı). `AboutFutures` **duruyor**: ana
+  sayfanın hizmet şeridi onu kullanıyor.
+
+### Panelde
+
+Yeni menü girdisi: **Hakkımızda** (`/hakkimizda`). Her blok bir kart:
+görsel + TR/EN başlık + TR/EN metin, yan yana.
+
+Yan yana olmasının sebebi yer değil görünürlük: sekmeye ya da alt alta
+koymaya kıyasla daha çok yer kaplıyor, ama eksik çeviriyi görünür kılan tek
+düzen bu — ekranın var olma sebebi de zaten tek dilli bir sayfayı iki dile
+çıkarmaktı.
+
+Kaydet düğmesi yalnızca gerçekten değişiklik varsa açılıyor. Hiçbir şey
+değiştirmeden kaydetmek `updated_at`i yalancı biçimde ilerletirdi; o alan
+"bu metne en son ne zaman dokunuldu" sorusunun tek cevabı.
+
+Açık/kapalı anahtarı ise **anında** kaydediyor, "Kaydet"i beklemiyor: bu bir
+metin düzenlemesi değil, bir yayın kararı — metni yarım bırakmışken bloğu
+gizleyebilmek gerekiyor.
+
+### Açık kalan
+
+Sayfa girişe kapalı. Hakkımızda çoğu sitede herkese açık bir tanıtım sayfası,
+ama bu vitrinin **tamamı** B2B ve giriş arkasında (D-107); ayrıcalık tanımak
+bu kararı tek bir sayfa için delmek olurdu. Sayfa ileride herkese açılacaksa
+uç da `permitAll` listesine alınmalı — ikisi birlikte değişir.
+
+---
+
+## D-173 — Cari güncelleme kuyruğu: vitrin talep eder, panel ERP'ye yazar
+
+**Tarih:** 2026-08-21
+**Durum:** Kabul edildi
+**Kapsam:** `SIMGE_OS_BE`, `SIMGE_OS_FE`, `SIMGE_OS_ADMIN_BE`, `SIMGE_OS_FE_ADMIN`
+
+### Bağlam
+
+Müşteri sipariş verirken teslimat adresi seçmek zorunda ve `sip_adresno`
+yalnızca **o carinin adres listesinde önceden var olan** bir satırı
+gösterebiliyor. Yani yeni bir şubeye sevk yapılabilmesi için adresin önce
+`CARI_HESAP_ADRESLERI`'ne girmiş olması şart. Bugün böyle bir yol yok:
+adres yalnızca cari açılışında, bir kez yazılıyor (D-127).
+
+Ölçüm:
+
+| | |
+|---|---|
+| Aktif cari | 2.441 |
+| En az bir adresi olan | 1.949 (**492'sinin hiç adresi yok**) |
+| Birden fazla adresi olan | 18 |
+| Bir caride görülen en yüksek adres sayısı | 16 |
+| `sip_adresno` değerleri (343.013 sipariş) | **hepsi 1** |
+
+Yani çok adresli sevk şemada var, pratikte hiç kullanılmamış.
+
+### Reddedilen seçenek: vitrine kısıtlı yazma yetkisi
+
+"Vitrin yalnızca `CARI_HESAP_ADRESLERI`'ne yazsın, yetkisi o tabloyla
+sınırlansın" seçeneği **ölçülerek** elendi.
+
+Mikro'nun kimlik değişmezi: `adr_RECno` IDENTITY ve `adr_RECid_RECno` ona
+eşit olmak zorunda. Sayıldı:
+
+```
+adr_RECid_RECno = adr_RECno  →  1.982 satır
+adr_RECid_RECno = 0          →      0 satır
+```
+
+İstisnasız. IDENTITY değeri INSERT anında bilinemediği için tek yol: 0 yaz,
+sonra aynı işlemde `SCOPE_IDENTITY()` ile **UPDATE** et. Dolayısıyla
+**INSERT-only yetki yetmiyor**, `UPDATE` de gerekiyor.
+
+SQL Server'da yetki tablo düzeyinde. `GRANT UPDATE ON CARI_HESAP_ADRESLERI`
+şu demek: internete açık servis, ERP'deki **1.982 adresin tamamını** —
+bütün gerçek müşterilerin fatura ve sevk adreslerini — yeniden yazabilir.
+"Yalnızca kendi carisinin satırları" kısıtı ancak Row-Level Security ya da
+saklı yordamla kurulabilir; ikisi de **Mikro'nun şemasına nesne eklemek**
+demek, yani D-100'ün yasakladığı şey.
+
+En dar verilebilecek yetki bile özelliğin kendisinden kat kat geniş.
+Vitrinin Mikro bağlantısı ayrıca bugün `sa` (sysadmin) ve yazmayı engelleyen
+tek şey `ReadOnlyRepository` sözleşmesi — o da derleme zamanı, sağlam değil:
+`ProductRepositoryImpl` içinde `@PersistenceContext(unitName = "mikro")` ile
+canlı bir `EntityManager` zaten duruyor.
+
+### Karar
+
+Tek bir kuyruk tablosu: `SIMGE_OS_APP.SIMGE_CARI_UPDATE_REQUEST`.
+
+```
+Vitrin --(talep)--> SIMGE_OS_APP --(panelde onay)--> CariWriter --> Mikro
+       ERP'ye hiç             kendi DB'miz          tek yazma noktası
+       dokunmaz
+```
+
+Üç talep türü, **tek tablo, tek ekran, tek onay akışı**:
+
+| Tür | Onaylanınca ERP'de |
+|---|---|
+| `ADRES_EKLE` | `CARI_HESAP_ADRESLERI`'ne **INSERT** |
+| `FATURA_ADRESI` | `CARI_HESAPLAR.cari_fatura_adres_no` **UPDATE** |
+| `CARI_BILGI` | `CARI_HESAPLAR` unvan / telefon / e-posta **UPDATE** |
+
+Ayrı iki mekanizma (adres kuyruğu + cari güncelleme kuyruğu) yapmak, aynı
+onay akışını iki kez yazmak olurdu.
+
+### Adres satırı düzenlenmiyor — ekle ve işaretçiyi çevir
+
+"Firmam taşındı" durumunda mevcut adres satırının metnini değiştirmiyoruz.
+Sebep geçmiş: `SIPARISLER.sip_adresno` ve `STOK_HAREKETLERI.sth_adres_no` o
+satırı **numarayla** gösteriyor. İçeriği değiştirilirse üç yıl önceki
+irsaliye, malın hiç gitmediği bir adresi gösterir.
+
+Doğru işlem: **yeni adres ekle (INSERT) + `cari_fatura_adres_no`'yu ona
+çevir (UPDATE)**. Eski satır olduğu gibi kalır.
+
+Bunun yan etkisi değerli: `CARI_HESAP_ADRESLERI` **yalnızca INSERT** kalıyor.
+
+```
+CARI_HESAP_ADRESLERI  →  yalnızca INSERT
+CARI_HESAPLAR         →  yalnızca işaretçi ve bilgi alanları UPDATE
+hiçbir yerde          →  DELETE yok
+```
+
+### E-posta kodu: talep ancak doğrulanınca oluşur
+
+Talep göndermeden önce kullanıcının **hesabına kayıtlı adrese** kod gidiyor
+ve kod girilmeden satır oluşmuyor (`otp_verified_at` NOT NULL). Mevcut
+altyapı kullanılıyor: `EmailOtp` + `SecretCodes` + `MailService`, yeni
+`purpose = CARI_UPDATE`.
+
+Kullanıcı zaten giriş yapmış durumda, dolayısıyla kod "kimsin" sorusunu
+değil **"hesabın e-postasına hâlâ erişiyor musun"** sorusunu cevaplıyor —
+ERP kaydını değiştiren bir işlem için ek adım. Çöp veriyi engellemez; onu
+panel onayı engelliyor. İki katman iki ayrı iş yapıyor.
+
+### Alan genişlikleri ERP'nin, doğrulama girişte
+
+Mikro sütunları beklenenden dar; ölçüldü:
+
+| Mikro sütunu | Karakter |
+|---|---|
+| `adr_Adres_kodu` (başlık) | **10** |
+| `adr_cadde` / `adr_mahalle` / `adr_sokak` | 50 |
+| `adr_ilce` / `adr_il` / `adr_ulke` | 15 |
+| `adr_posta_kodu` | 8 |
+| `adr_tel_no1` | **10** |
+| `cari_unvan1` | 50 |
+| `cari_EMail` | 80 |
+
+Kuyruk tablosu **bu genişliklerde** tanımlandı ve vitrin formu aynı sınırları
+uyguluyor. Sebep: sınırı girişte uygulamazsak, panele **ERP'ye yazılamayan**
+bir talep düşer ve hata operatörün karşısına, düzeltemeyeceği bir anda çıkar.
+
+### Telefon üç alana bölünüyor — ve mevcut bir hata düzeltildi
+
+Mikro telefonu bölerek tutuyor; ölçüldü, dolu satırların hepsi böyle:
+`adr_tel_ulke_kodu`='90', `adr_tel_bolge_kodu`='312', `adr_tel_no1`='3976498'
+(7 hane).
+
+`insert-cari-adres.sql` ise telefonun **tamamını** `adr_tel_no1`'e yazıyor ve
+`RegistrationReviewController` o alanı `@Size(max = 50)` ile kabul ediyor.
+`adr_tel_no1` 10 karakter: normal bir cep numarası (`05321234567`, 11 hane)
+INSERT'i **truncation hatasıyla düşürür**. Cari açılışında bugüne kadar
+patlamamış olması, girilen numaraların kısa olmasından. D-173 kapsamında
+telefon bölme ortak bir yardımcıya alındı ve iki yol da onu kullanıyor.
+
+### Adres başlığı: gerçekçi olalım
+
+`adr_Adres_kodu` 10 karakter ve fiilen kullanılmıyor — 1.982 satırın
+**1.975'i boş**, dolu olan 7 tanesi de "1" ve "06540" gibi kodlar, insan
+etiketi değil.
+
+Dolayısıyla "Çankaya Şube" (12 karakter) oraya sığmıyor. İki karar:
+
+1. Kullanıcı isterse ≤10 karakterlik kısa bir kod girebiliyor.
+2. **Görünen etiket her zaman ilçe/il'den üretiliyor** — başlık boşsa
+   "Çankaya / ANKARA" yazıyor. Aksi halde 30 şubeli bir müşteri ödeme
+   ekranında 30 boş satır görürdü.
+
+### Ödeme ekranı: otomatik seçim kapatıldı
+
+`address-block` bugün `addresses[0]`ı sessizce seçiyor ("çoğu caride tek
+adres var" gerekçesiyle). Tek adreste doğru, çok adreste **siparişin yanlış
+şubeye gitmesi** demek. Yeni davranış:
+
+- 1 adres → otomatik seçili (davranış korunuyor),
+- >1 adres → **açık seçim zorunlu**, varsayılan olarak son siparişin
+  `sip_adresno`'su işaretli gelir.
+
+Fatura adresi ayrıca **gösteriliyor ama seçilmiyor**: siparişte fatura adresi
+alanı yok, fatura carinin `cari_fatura_adres_no`'suna kesiliyor. Seçtirmek,
+gerçek faturayı değiştirmeyen bir kontrol göstermek olurdu.
+
+Uyarı: 2.441 carinin **690'ında** `cari_fatura_adres_no` var olmayan bir
+satırı gösteriyor. Gösterim, işaretçi çözülmezse en küçük numaralı adrese
+düşüyor.
